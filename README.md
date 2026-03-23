@@ -1,18 +1,12 @@
 # Hypercube
 
-A distributed hypercube routing simulator written in Rust. Simulates packet routing on n-dimensional hypercube networks and measures congestion, latency, and hop counts against theoretical bounds.
+Simulates packet routing on n-dimensional hypercube networks. Measures congestion, latency, and hop counts for different routing strategies and traffic patterns.
 
-Each node runs as an independent async task (via Tokio), communicating through per-dimension channels with tick-synchronized barriers. The topology is implicit -- neighbors are computed via bit arithmetic, so no adjacency lists are stored.
+The engine is tick-synchronous -- a single `tick()` call advances all nodes using double-buffered link queues. There's also an async mode behind the `async` feature flag that spawns per-node Tokio tasks. Neighbors are computed via bit-flips (`node_id XOR (1 << dim)`), so no adjacency lists are stored.
 
-## Why hypercubes?
+## Background
 
-An n-dimensional hypercube connects 2^n nodes where each node's neighbors differ by exactly one bit. This structure has been foundational in parallel computing theory since the 1980s:
-
-- **Valiant and Brebner (1981)** proved that randomized two-phase routing achieves O(n) congestion on any permutation, vs. the Theta(sqrt(N)) worst-case of deterministic greedy routing.
-- **The Connection Machine CM-2** (1987) was a physical 16-dimensional hypercube with 65,536 processors.
-- Modern data center topologies (HyperX, fat-trees, dragonfly) trace their lineage to hypercube routing theory.
-
-This simulator lets you run those classical experiments directly and verify the theoretical results.
+An n-dimensional hypercube connects 2^n nodes where each node's neighbors differ by exactly one bit. Valiant and Brebner (1981) showed that randomized two-phase routing achieves O(n) congestion on any permutation, compared to the Theta(sqrt(N)) worst-case of deterministic greedy routing. This simulator runs those experiments and checks the results against the theory.
 
 ## Quick start
 
@@ -101,17 +95,18 @@ The `per_dim_load` and `per_dim_max_queue` columns are semicolon-delimited, one 
 
 ```
 src/
-  lib.rs                    Library root
-  main.rs                   CLI binary
+  lib.rs                    Library root, crate docs with embedding example
+  main.rs                   CLI binary (sync, no Tokio runtime)
   cli.rs                    Argument parsing (clap)
   engine/
-    mod.rs                  Simulation orchestration
-    builder.rs              Channel and node assembly
+    mod.rs                  Sync Engine<T> with tick(), inject_one(), drain_delivered()
+    builder.rs              SimulationConfig and engine construction
+    async_engine.rs         AsyncEngine (behind "async" feature)
   node/
-    mod.rs                  Async node event loop
-  packet.rs                 Packet structure and routing phases
+    mod.rs                  Per-node Tokio task (behind "async" feature)
+  packet.rs                 PacketHeader + Packet<T> with Deref
   routing/
-    mod.rs                  RoutingStrategy trait
+    mod.rs                  RoutingStrategy trait (operates on PacketHeader)
     bitfix.rs               Bit-fixing (greedy) routing
     valiant.rs              Valiant's two-phase routing
     fault_tolerant.rs       Fault-tolerant routing with misrouting
@@ -130,10 +125,48 @@ src/
     export.rs               CSV output
 ```
 
-**Key design decisions:**
-- **Implicit topology**: No adjacency lists. Neighbors are computed via `node_id XOR (1 << dim)`. This uses O(1) space per node.
-- **Tick-synchronous**: All nodes advance together via a shared barrier. This matches the BSP (Bulk Synchronous Parallel) model used in the theoretical analysis.
-- **Per-node async tasks**: Each node is a `tokio::spawn` task with its own channel endpoints. This models the distributed nature of the system but limits scalability beyond ~16 dimensions.
+Notes:
+- Neighbors are implicit: `node_id XOR (1 << dim)`, no adjacency lists.
+- Double-buffered `VecDeque` link queues prevent packets from advancing more than one hop per tick (BSP model).
+- `Engine<T>` is sync with no Tokio dependency. `AsyncEngine` (behind `async` feature) spawns per-node Tokio tasks.
+- `Packet<T>` carries an arbitrary payload. `RoutingStrategy` operates on `PacketHeader` only, so the trait is non-generic and object-safe.
+
+## Library usage
+
+`Engine<T>` is generic over payload type. Without the `async` feature, there's no Tokio dependency.
+
+```toml
+[dependencies]
+hypercube = { path = "../hypercube" }
+```
+
+```rust
+use std::sync::Arc;
+use hypercube::engine::{Engine, SimulationConfig};
+use hypercube::routing::BitFixing;
+use hypercube::topology::{FaultSet, NodeId};
+
+let config = SimulationConfig {
+    dimension: 4,
+    strategy: Arc::new(BitFixing),
+    faults: FaultSet::new(),
+    channel_capacity: 256,
+    seed: 42,
+};
+
+let mut net: Engine<u64> = Engine::build(config);
+
+// Inject a message from core 0 to core 15.
+net.inject_one(NodeId::new(0), NodeId::new(15), 0xDEAD);
+
+// Step the network and collect delivered messages.
+while net.in_flight() > 0 {
+    net.tick();
+    for pkt in net.drain_delivered() {
+        println!("delivered payload {} after {} hops", pkt.payload, pkt.hops);
+    }
+}
+```
 
 ## Performance
 
@@ -161,35 +194,35 @@ cargo run --release -- --sweep --dim-range 3:16 --strategy both \
 
 ![Congestion scaling](charts/congestion_scaling.png)
 
-Three distinct regimes emerge. **Adversarial patterns** (bit-reversal, transpose): bit-fixing congestion tracks the theoretical sqrt(N) bound while Valiant stays at O(n) -- the crossover is visible around dim 5--7. **Easy patterns** (butterfly, complement): bit-fixing achieves congestion 1 due to perfect routing symmetry, while Valiant *increases* congestion by adding unnecessary random intermediates. **Middle ground** (random, shuffle): bit-fixing stays low, Valiant's overhead is the dominant cost. This is the classic tradeoff -- Valiant fixes worst-case but hurts best-case.
+Three regimes show up. Adversarial patterns (bit-reversal, transpose): bit-fixing congestion tracks sqrt(N) while Valiant stays at O(n), crossing over around dim 5--7. Easy patterns (butterfly, complement): bit-fixing gets congestion 1, and Valiant actually makes it worse by adding random intermediates. Middle ground (random, shuffle): bit-fixing stays low, Valiant's overhead dominates.
 
 ### Strategy comparison
 
 ![Strategy comparison](charts/strategy_comparison.png)
 
-Left panel (greedy): congestion spans 7 orders of magnitude depending on traffic -- bit-reversal/transpose explode to 128 at dim=16, while complement/butterfly sit at 1. Right panel (Valiant): all patterns collapse into a tight O(n) band. This is Valiant's guarantee -- congestion is traffic-oblivious, at the cost of never being optimal on easy patterns.
+Left panel (greedy): congestion varies widely -- bit-reversal/transpose hit 128 at dim=16, while complement/butterfly sit at 1. Right panel (Valiant): all patterns fall into a tight O(n) band regardless of traffic, but it's never optimal on easy patterns.
 
 ### Latency vs. hops
 
 ![Latency vs hops](charts/latency_vs_hops.png)
 
-In the tick-synchronous model, all nodes forward simultaneously, so packets traverse ~2 hops per tick via pipelining. Latency scales linearly with hop count across all patterns. Bit-fixing shows clear separation: complement (16 hops at dim=16) has the highest latency while butterfly (avg 1 hop, max 2) has the lowest. Valiant collapses all patterns into a tight band since the random intermediate dominates path length regardless of traffic.
+Packets move ~2 hops per tick since all nodes forward simultaneously. Latency scales linearly with hop count. Bit-fixing shows separation: complement (16 hops at dim=16) has the highest latency, butterfly (avg 1 hop, max 2) the lowest. Valiant collapses patterns into a tight band since the random intermediate dominates path length.
 
 ### Hop distribution
 
 ![Hop distribution](charts/hop_distribution.png)
 
-Left panel (greedy): hop count is traffic-dependent. Complement always traverses all n dimensions (max distance). Butterfly averages 1 hop (swaps only bits 0 and n-1, but packets needing both flips take 2 hops). Bit-reversal, transpose, shuffle, and random cluster around n/2 -- the expected Hamming distance for "average" permutations. Right panel (Valiant): the random intermediate roughly doubles path length, pushing all patterns toward n hops. The n/2 reference line shows the expected hops for a single random-to-random leg.
+Left panel (greedy): complement traverses all n dimensions. Butterfly averages 1 hop (swaps bits 0 and n-1; packets needing both flips take 2). The rest cluster around n/2. Right panel (Valiant): the random intermediate roughly doubles path length, pushing everything toward n hops.
 
 ## Theory notes
 
-Some observations from the data that connect back to the classical results.
+Observations from the simulation data.
 
 ### Why sqrt(N) congestion?
 
-Consider bit-reversal on a 16-cube. Node `0000000011111111` sends to `1111111100000000`. Under MSB-first bit-fixing, the packet first flips bit 15, then bit 14, ..., then bit 0. The key insight is that **all packets whose source and destination differ on bit k must cross the same set of dimension-k edges** in the same direction. For bit-reversal, bit k is flipped whenever source bit k differs from source bit (n-1-k). At the "middle" dimensions (around k = n/2), many packets funnel through the same edge -- this is the bottleneck that creates the Theta(sqrt(N)) bound.
+Consider bit-reversal on a 16-cube. Node `0000000011111111` sends to `1111111100000000`. Under MSB-first bit-fixing, the packet flips bit 15, then 14, ..., then 0. All packets whose source and destination differ on bit k cross the same dimension-k edges in the same direction. For bit-reversal, bit k is flipped whenever source bit k differs from source bit (n-1-k). At the middle dimensions (around k = n/2), many packets funnel through the same edge, creating the Theta(sqrt(N)) bottleneck.
 
-Our data shows max_congestion exactly tracks 2^(floor((d-2)/2)) for dimensions 3--16. For even n this equals sqrt(N)/2; for odd n it's sqrt(N)/(2*sqrt(2)). The exact progression is: 1, 2, 2, 4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 128 for dims 3--16.
+The data shows max_congestion tracks 2^(floor((d-2)/2)) for dimensions 3--16: 1, 2, 2, 4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 128. For even n that's sqrt(N)/2; for odd n it's sqrt(N)/(2*sqrt(2)).
 
 ### Why complement has congestion 1
 
@@ -197,38 +230,36 @@ The complement permutation (node x sends to NOT(x)) flips every bit. Under MSB-f
 
 ### The Valiant tradeoff in numbers
 
-Valiant's two-phase routing sends each packet to a uniformly random intermediate node before routing to the true destination. This guarantees O(n) congestion on *any* permutation -- our data confirms max_congestion of 8--9 at dim=16 across all six traffic patterns.
+Valiant sends each packet to a random intermediate before routing to the destination. This gives O(n) congestion on any permutation -- the data shows max_congestion of 8--9 at dim=16 across all six traffic patterns.
 
-The cost is path length. Bit-fixing on bit-reversal averages floor(n/2) hops; Valiant averages ~n (the expected Hamming distance of two random nodes is n/2 per phase, times two phases). For "easy" patterns like butterfly (avg 1 hop with bit-fixing), Valiant inflates to ~n hops -- a ~16x penalty at dim=16 for no congestion benefit.
+The cost is path length. Bit-fixing on bit-reversal averages floor(n/2) hops; Valiant averages ~n (n/2 per phase, two phases). For butterfly (avg 1 hop with bit-fixing), Valiant inflates to ~n hops at dim=16 for no congestion benefit.
 
-The crossover where Valiant becomes worthwhile is visible in the congestion scaling charts around dim 6--8 for adversarial patterns. At dim=6 for bit-reversal, bit-fixing congestion is 4, while Valiant varies across runs (3--5 in our data) -- so Valiant sometimes wins but not consistently. By dim=8, Valiant reliably beats bit-fixing (congestion 4--6 vs. 8 for bit-reversal). Below dim=8, bit-fixing's congestion is still small enough to compete with Valiant's randomized overhead.
+The crossover is around dim 6--8 for adversarial patterns. At dim=6 for bit-reversal, bit-fixing congestion is 4 and Valiant varies 3--5 across runs, so it's a wash. By dim=8, Valiant reliably wins (4--6 vs. 8).
 
 ### Odd-dimension fixed points
 
 For odd n, the bit-reversal permutation has a fixed point at the middle bit (bit floor(n/2)): reversing the bit positions maps the middle bit to itself. This means no packet ever needs to flip that dimension, so its per-dimension load is exactly 0. You can see this in the per_dim_load column -- odd dimensions have one zero entry. This is also why avg_hops = floor(n/2) rather than n/2 for bit-reversal.
 
-### Shuffle is surprisingly well-behaved
+### Shuffle has congestion 2
 
-The perfect shuffle (circular left-shift of the address) averages n/2 hops per packet, so individual packets don't touch all dimensions. But our data shows max_congestion = 2 for bit-fixing across all dimensions 3--16. The reason: shuffle distributes load with remarkable uniformity. The per-dimension load is exactly N/2 for every dimension -- every dimension carries exactly the same total traffic. With N/2 packets spread across N/2 directed edges per dimension, the average per-edge load is 1, and the maximum is 2. Unlike bit-reversal, the rotation structure avoids funneling packets through a bottleneck at the middle dimensions.
+The perfect shuffle (circular left-shift) averages n/2 hops per packet. The data shows max_congestion = 2 for bit-fixing across all dimensions 3--16. The per-dimension load is exactly N/2 for every dimension -- the rotation distributes traffic evenly. With N/2 packets spread across N/2 directed edges per dimension, the average per-edge load is 1 and the max is 2.
 
 ## Related work
 
-- [BookSim](https://github.com/booksim/booksim2) -- Stanford's interconnection network simulator. The standard tool in computer architecture research. Supports many topologies and routing algorithms.
+- [BookSim](https://github.com/booksim/booksim2) -- Stanford's interconnection network simulator. Supports many topologies and routing algorithms.
 - Valiant, L. G. (1982). "A scheme for fast parallel communication." *SIAM Journal on Computing*.
 - Leighton, F. T. (1992). *Introduction to Parallel Algorithms and Architectures*. Morgan Kaufmann. Chapters 3-4 cover hypercube routing theory.
 
-## Future: Multi-core interconnect for rvsim
+## Future
 
-This project is designed to eventually serve as the **network-on-chip (NoC) layer** for [rvsim](https://github.com/willmccallion/rvsim), a cycle-accurate RISC-V system simulator. The goal is to connect multiple rvsim cores through a hypercube interconnect, creating a full many-core simulator with realistic network contention modeling.
+The plan is to use this as the interconnect for [rvsim](https://github.com/willmccallion/rvsim), a RISC-V simulator. `Engine<T>` can carry coherence messages (`Packet<CoherenceMsg>`) between cores using `inject_one`/`tick`/`drain_delivered`.
 
-The integration path:
+What's left:
 
-1. **Multi-core rvsim** — instantiate N cores with private L1 caches sharing a coherence domain
-2. **Cache coherence protocol** — MESI/MOESI directory-based coherence, where invalidations, fetches, and writebacks become network messages
-3. **Hypercube as the NoC transport** — coherence messages are packets routed through the hypercube. Miss latency depends on network congestion, hop count, and routing strategy — all things this simulator already measures
-4. **Unified design-space exploration** — sweep over core count, cache sizes, network dimension, and routing strategy simultaneously to study the interplay between microarchitecture and interconnect
-
-This mirrors the architecture of gem5's Ruby (coherence) + Garnet (network) subsystems, but built from scratch in Rust with both the CPU and network models under the same roof.
+1. Multi-core rvsim with private L1 caches
+2. Cache coherence protocol (MESI/MOESI), with invalidations/fetches/writebacks as packet payloads
+3. Wire up the transport -- cache controllers call `inject_one` and poll `drain_delivered` each cycle
+4. Sweep over core count, cache sizes, dimension, and routing strategy together
 
 ## License
 
