@@ -86,9 +86,9 @@ impl Engine {
         let is_valiant = self.strategy.name() == "valiant";
         if is_valiant {
             let mut intermediate_rng = ChaCha8Rng::seed_from_u64(rng.next_u64());
-            let node_count = self.cube.node_count() as u16;
+            let node_count = self.cube.node_count();
             for packet in &mut packets {
-                let intermediate = NodeId::new((intermediate_rng.next_u32() as u16) % node_count);
+                let intermediate = NodeId::new((intermediate_rng.next_u32() % node_count) as u16);
                 packet.phase = Phase::ValiantPhase1 { intermediate };
             }
         }
