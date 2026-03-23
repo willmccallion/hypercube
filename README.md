@@ -187,21 +187,21 @@ Some observations from the data that connect back to the classical results.
 
 ### Why sqrt(N) congestion?
 
-Consider bit-reversal on a 16-cube. Node `0000000011111111` sends to `1111111100000000`. Under MSB-first bit-fixing, the packet first flips bit 15, then bit 14, ..., then bit 0. The key insight is that **all packets whose source and destination differ on bit k must cross the same set of dimension-k edges** in the same direction. For bit-reversal, bit k is flipped whenever source bit k differs from source bit (n-1-k). At the "middle" dimensions (around k = n/2), roughly sqrt(N) packets funnel through the same edge -- this is the bottleneck that creates the Theta(sqrt(N)) bound.
+Consider bit-reversal on a 16-cube. Node `0000000011111111` sends to `1111111100000000`. Under MSB-first bit-fixing, the packet first flips bit 15, then bit 14, ..., then bit 0. The key insight is that **all packets whose source and destination differ on bit k must cross the same set of dimension-k edges** in the same direction. For bit-reversal, bit k is flipped whenever source bit k differs from source bit (n-1-k). At the "middle" dimensions (around k = n/2), many packets funnel through the same edge -- this is the bottleneck that creates the Theta(sqrt(N)) bound.
 
-Our data shows max_congestion exactly tracks 2^(floor((d-2)/2)) for dimensions 3--16, which is sqrt(N)/2. The factor of 2 comes from MSB-first ordering splitting the bottleneck across two adjacent dimensions.
+Our data shows max_congestion exactly tracks 2^(floor((d-2)/2)) for dimensions 3--16. For even n this equals sqrt(N)/2; for odd n it's sqrt(N)/(2*sqrt(2)). The exact progression is: 1, 2, 2, 4, 4, 8, 8, 16, 16, 32, 32, 64, 64, 128 for dims 3--16.
 
 ### Why complement has congestion 1
 
-The complement permutation (node x sends to NOT(x)) flips every bit. Under bit-fixing, every packet takes the exact same path structure: flip bits 0, 1, 2, ..., n-1 in order. Because the permutation is the bitwise complement, each dimension-k edge carries exactly one packet per node pair in a given direction. No edge is shared, so congestion is 1 regardless of dimension. The per-dimension load is exactly N for every dimension -- perfectly uniform.
+The complement permutation (node x sends to NOT(x)) flips every bit. Under MSB-first bit-fixing, every packet traverses all n dimensions. The total per-dimension load is N (every packet crosses every dimension). Each dimension has N directed edges (one per node), so the average per-edge load is N/N = 1. In fact the maximum is also 1: complement is a perfect matching on every dimension cut, so no directed edge carries more than one packet. This gives max_congestion = 1 regardless of dimension.
 
 ### The Valiant tradeoff in numbers
 
 Valiant's two-phase routing sends each packet to a uniformly random intermediate node before routing to the true destination. This guarantees O(n) congestion on *any* permutation -- our data confirms max_congestion of 8--9 at dim=16 across all six traffic patterns.
 
-The cost is path length. Bit-fixing on bit-reversal averages n/2 hops; Valiant averages n (the expected Hamming distance of two random nodes is n/2 per phase, times two phases). For "easy" patterns like butterfly (1 hop with bit-fixing), Valiant inflates to n hops -- a 16x penalty at dim=16 for no congestion benefit.
+The cost is path length. Bit-fixing on bit-reversal averages floor(n/2) hops; Valiant averages ~n (the expected Hamming distance of two random nodes is n/2 per phase, times two phases). For "easy" patterns like butterfly (1 hop with bit-fixing), Valiant inflates to ~n hops -- a 16x penalty at dim=16 for no congestion benefit.
 
-The crossover where Valiant becomes worthwhile is visible in the congestion scaling charts around dim 5--7 for adversarial patterns. Below that, bit-fixing's sqrt(N) is still small enough to beat Valiant's constant overhead.
+The crossover where Valiant becomes worthwhile is visible in the congestion scaling charts around dim 6--8 for adversarial patterns. Valiant first beats bit-fixing at dim=6 (congestion 3 vs. 4). Below that, bit-fixing's congestion is still small enough to beat Valiant's constant overhead.
 
 ### Odd-dimension fixed points
 
@@ -209,7 +209,7 @@ For odd n, the bit-reversal permutation has a fixed point at the middle bit (bit
 
 ### Shuffle is surprisingly well-behaved
 
-The perfect shuffle (circular left-shift of the address) might seem like it would create congestion -- it touches every bit position. But our data shows max_congestion = 2 for bit-fixing across all dimensions 3--16. The reason: shuffle is a *rotation* of bit positions, not a reversal. Each bit moves to an adjacent position, so the routing paths are short and well-distributed. The per-dimension load is exactly N/2 for every dimension, evenly split. This makes shuffle a "middle ground" pattern -- it exercises the full network but doesn't create the funneling bottleneck that bit-reversal does.
+The perfect shuffle (circular left-shift of the address) averages n/2 hops per packet, so individual packets don't touch all dimensions. But our data shows max_congestion = 2 for bit-fixing across all dimensions 3--16. The reason: shuffle distributes load with remarkable uniformity. The per-dimension load is exactly N/2 for every dimension -- every dimension carries exactly the same total traffic. With N/2 packets spread across N/2 directed edges per dimension, the average per-edge load is 1, and the maximum is 2. Unlike bit-reversal, the rotation structure avoids funneling packets through a bottleneck at the middle dimensions.
 
 ## Related work
 

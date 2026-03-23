@@ -11,6 +11,7 @@ import math
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 
 STRATEGY_COLORS = {"bit-fixing": "#d62728", "valiant": "#1f77b4"}
@@ -24,10 +25,14 @@ TRAFFIC_MARKERS = {
     "random": "x",
 }
 
-# Patterns where bit-fixing hits Theta(sqrt(N)) worst case.
 ADVERSARIAL = {"bit-reversal", "transpose"}
-# Patterns where bit-fixing is trivially good (congestion ~1).
 EASY_FOR_GREEDY = {"complement", "butterfly"}
+
+# Shared reference line style: thin dotted black.
+REF_STYLE = dict(color="black", linestyle=":", linewidth=1.5, alpha=0.6)
+# Light green fill for "expected" theory regions.
+BAND_COLOR = "#b6d7a8"
+BAND_ALPHA = 0.25
 
 plt.rcParams.update(
     {
@@ -43,7 +48,6 @@ plt.rcParams.update(
 
 def load(path: str) -> pd.DataFrame:
     df = pd.read_csv(path)
-    # Average over runs per (dimension, strategy, traffic) group.
     grouped = (
         df.groupby(["dimension", "strategy", "traffic"])
         .agg(
@@ -64,11 +68,7 @@ def load(path: str) -> pd.DataFrame:
 
 
 def fully_delivered(df: pd.DataFrame) -> pd.DataFrame:
-    """Filter to only rows where all packets were delivered (delivery_rate >= 99.9%).
-
-    This removes tick-budget artifacts (e.g., shuffle at dim=16) that would
-    distort congestion and latency charts with meaningless queue-overflow numbers.
-    """
+    """Filter to only rows where all packets were delivered (delivery_rate >= 99.9%)."""
     return df[df["delivery_rate"] >= 0.999].copy()
 
 
@@ -88,6 +88,21 @@ def plot_congestion_scaling(df: pd.DataFrame, outdir: Path):
     for idx, traffic in enumerate(traffic_patterns):
         ax = axes[idx]
         subset = df[df["traffic"] == traffic]
+        dims = np.array(sorted(subset["dimension"].unique()))
+
+        # Green shaded band for expected bit-fixing congestion.
+        if traffic in ADVERSARIAL:
+            exact = np.array([2 ** ((d - 2) // 2) for d in dims])
+            # Band: 0.7x to 1.3x of theoretical (tight band around prediction).
+            ax.fill_between(dims, exact * 0.7, exact * 1.3,
+                            color=BAND_COLOR, alpha=BAND_ALPHA, label="expected (theory)")
+            ax.plot(dims, exact, **REF_STYLE, label=r"$2^{\lfloor(n{-}2)/2\rfloor}$")
+        elif traffic == "shuffle":
+            ax.axhspan(1.5, 2.5, color=BAND_COLOR, alpha=BAND_ALPHA, label="expected (theory)")
+            ax.axhline(2, **REF_STYLE, label="congestion = 2")
+        elif traffic in EASY_FOR_GREEDY:
+            ax.axhspan(0.7, 1.3, color=BAND_COLOR, alpha=BAND_ALPHA, label="expected (theory)")
+            ax.axhline(1, **REF_STYLE, label="congestion = 1")
 
         for strategy in ["bit-fixing", "valiant"]:
             s = subset[subset["strategy"] == strategy].sort_values("dimension")
@@ -104,19 +119,6 @@ def plot_congestion_scaling(df: pd.DataFrame, outdir: Path):
                 linewidth=2,
             )
 
-        # Theoretical sqrt(N) reference line for adversarial patterns.
-        if traffic in ADVERSARIAL:
-            dims = sorted(subset["dimension"].unique())
-            sqrt_n = [2 ** (d / 2) for d in dims]
-            ax.plot(
-                dims,
-                sqrt_n,
-                color="gray",
-                linestyle=":",
-                alpha=0.6,
-                label=r"$\sqrt{N}$ (theory)",
-            )
-
         subtitle = ""
         if traffic in ADVERSARIAL:
             subtitle = " (adversarial for greedy)"
@@ -126,9 +128,8 @@ def plot_congestion_scaling(df: pd.DataFrame, outdir: Path):
         ax.set_xlabel("dimension (n)")
         ax.set_ylabel("max congestion")
         ax.set_yscale("log", base=2)
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=8)
 
-    # Hide unused subplots.
     for idx in range(len(traffic_patterns), len(axes)):
         axes[idx].set_visible(False)
 
@@ -148,6 +149,23 @@ def plot_strategy_comparison(df: pd.DataFrame, outdir: Path):
         ("valiant", ax2, "Valiant (Randomized)"),
     ]:
         subset = df[df["strategy"] == strategy]
+        dims = np.array(sorted(subset["dimension"].unique()))
+
+        # Theory shading.
+        if strategy == "bit-fixing":
+            exact = np.array([2 ** ((d - 2) // 2) for d in dims])
+            ax.fill_between(dims, exact * 0.7, exact * 1.3,
+                            color=BAND_COLOR, alpha=BAND_ALPHA,
+                            label=r"$2^{\lfloor(n{-}2)/2\rfloor}$ band")
+            ax.plot(dims, exact, **REF_STYLE, label=r"$2^{\lfloor(n{-}2)/2\rfloor}$")
+        else:
+            # Valiant congestion tracks ~n/2 empirically.
+            half = dims / 2
+            ax.fill_between(dims, half, half + 2,
+                            color=BAND_COLOR, alpha=BAND_ALPHA,
+                            label="n/2 band")
+            ax.plot(dims, half, **REF_STYLE, label="n/2")
+
         for traffic in sorted(subset["traffic"].unique()):
             t = subset[subset["traffic"] == traffic].sort_values("dimension")
             ax.plot(
@@ -163,7 +181,7 @@ def plot_strategy_comparison(df: pd.DataFrame, outdir: Path):
         ax.set_xlabel("dimension (n)")
         ax.set_ylabel("max congestion")
         ax.set_yscale("log", base=2)
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=8)
 
     fig.suptitle(
         "Congestion Scaling: Greedy vs. Randomized Routing\n"
@@ -177,16 +195,24 @@ def plot_strategy_comparison(df: pd.DataFrame, outdir: Path):
 
 
 def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
-    """Average latency vs. average hops — shows pipelining and queuing effects."""
+    """Average latency vs. average hops — shows pipelining effect."""
     df = fully_delivered(df)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
-    # Left: bit-fixing. Right: Valiant.
     for strategy, ax, title in [
         ("bit-fixing", ax1, "Bit-Fixing"),
         ("valiant", ax2, "Valiant"),
     ]:
         subset = df[df["strategy"] == strategy]
+        max_h = subset["avg_hops"].max() * 1.1
+
+        # Green band: the empirical ratio is ~0.53-0.60 hops.
+        h = np.linspace(0, max_h, 100)
+        ax.fill_between(h, h * 0.50, h * 0.62,
+                        color=BAND_COLOR, alpha=BAND_ALPHA,
+                        label="expected range")
+        ax.plot(h, h * 0.56, **REF_STYLE, label="latency $\\approx$ 0.56 $\\times$ hops")
+
         for traffic in sorted(subset["traffic"].unique()):
             t = subset[subset["traffic"] == traffic].sort_values("dimension")
             ax.scatter(
@@ -197,7 +223,6 @@ def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
                 alpha=0.8,
                 label=traffic,
             )
-            # Connect points with a thin line to show progression.
             ax.plot(t["avg_hops"], t["avg_latency"], alpha=0.3, linewidth=1)
 
         ax.set_xlim(left=-0.5)
@@ -209,7 +234,7 @@ def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
 
     fig.suptitle(
         "Latency vs. Hops\n"
-        "(synchronous model: packets traverse ~2 hops/tick via pipelining)",
+        "(synchronous pipelining: packets traverse ~1.8 hops/tick)",
         fontweight="bold",
         y=1.02,
     )
@@ -228,6 +253,23 @@ def plot_hop_distribution(df: pd.DataFrame, outdir: Path):
         ("valiant", ax2, "Valiant (Randomized)"),
     ]:
         subset = df[df["strategy"] == strategy]
+        dims = np.array(sorted(subset["dimension"].unique()))
+
+        if strategy == "bit-fixing":
+            # Most patterns cluster between 1 and n. Shade n/2 band.
+            ax.fill_between(dims, dims * 0.35, dims * 0.65,
+                            color=BAND_COLOR, alpha=BAND_ALPHA,
+                            label="n/2 band")
+            ax.plot(dims, dims / 2, **REF_STYLE, label="n/2")
+            ax.plot(dims, dims, color="black", linestyle="--",
+                    linewidth=1.2, alpha=0.35, label="n (all dims)")
+        else:
+            # Valiant: all patterns converge to ~n hops.
+            ax.fill_between(dims, dims * 0.85, dims * 1.05,
+                            color=BAND_COLOR, alpha=BAND_ALPHA,
+                            label="~n band")
+            ax.plot(dims, dims, **REF_STYLE, label="n (two n/2 phases)")
+
         for traffic in sorted(subset["traffic"].unique()):
             t = subset[subset["traffic"] == traffic].sort_values("dimension")
             ax.plot(
@@ -239,21 +281,10 @@ def plot_hop_distribution(df: pd.DataFrame, outdir: Path):
                 linewidth=1.8,
             )
 
-        # Theoretical reference: n/2 average hops for random routing.
-        dims = sorted(subset["dimension"].unique())
-        ax.plot(
-            dims,
-            [d / 2 for d in dims],
-            color="gray",
-            linestyle=":",
-            alpha=0.6,
-            label="n/2 (expected random)",
-        )
-
         ax.set_title(title, fontweight="bold")
         ax.set_xlabel("dimension (n)")
         ax.set_ylabel("avg hops")
-        ax.legend(fontsize=9)
+        ax.legend(fontsize=8)
 
     fig.suptitle(
         "Average Hop Count vs. Dimension\n"
