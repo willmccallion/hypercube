@@ -52,7 +52,7 @@ pub struct Complement;
 
 impl TrafficPattern for Complement {
     fn generate(&self, cube: &Hypercube, _rng: &mut dyn RngCore) -> Vec<Packet> {
-        let mask = (1u16 << cube.dim()) - 1;
+        let mask = ((1u32 << cube.dim()) - 1) as u16;
         cube.nodes()
             .enumerate()
             .map(|(i, node)| {
@@ -142,7 +142,7 @@ pub struct Shuffle;
 impl TrafficPattern for Shuffle {
     fn generate(&self, cube: &Hypercube, _rng: &mut dyn RngCore) -> Vec<Packet> {
         let n = cube.dim();
-        let mask = (1u16 << n) - 1;
+        let mask = ((1u32 << n) - 1) as u16;
         cube.nodes()
             .enumerate()
             .map(|(i, node)| {
@@ -223,12 +223,21 @@ mod tests {
 
     #[test]
     fn complement_max_distance() {
-        let cube = Hypercube::new(6);
-        let mut rng = rand::rng();
-        let packets = Complement.generate(&cube, &mut rng);
-        // Every packet should traverse all 6 dimensions.
-        for p in &packets {
-            assert_eq!(p.source.hamming_distance(p.destination), 6);
+        // Test across all dimensions including 16 (the u16 boundary).
+        for n in 1..=16u8 {
+            let cube = Hypercube::new(n);
+            let mut rng = rand::rng();
+            let packets = Complement.generate(&cube, &mut rng);
+            for p in &packets {
+                assert_eq!(
+                    p.source.hamming_distance(p.destination),
+                    n as u32,
+                    "complement at dim={n}: node {} should send to {}, not {}",
+                    p.source.raw(),
+                    p.source.raw() ^ ((1u32 << n) - 1) as u16,
+                    p.destination.raw()
+                );
+            }
         }
     }
 

@@ -64,7 +64,7 @@ impl FaultTolerant {
 
         // All distance-reducing moves blocked. Misroute along a healthy
         // non-differing dimension chosen at random.
-        let all_dims_mask = (1u16 << cube.dim()) - 1;
+        let all_dims_mask = ((1u32 << cube.dim()) - 1) as u16;
         let non_diff = all_dims_mask & !diff;
 
         let mut misroute = Vec::new();
