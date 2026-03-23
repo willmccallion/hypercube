@@ -16,7 +16,7 @@ impl TrafficPattern for RandomPermutation {
     fn generate(&self, cube: &Hypercube, rng: &mut dyn RngCore) -> Vec<Packet> {
         let n = cube.node_count() as usize;
         // Fisher-Yates shuffle to produce a random permutation.
-        let mut perm: Vec<u16> = (0..n as u16).collect();
+        let mut perm: Vec<u16> = (0..cube.node_count()).map(|i| i as u16).collect();
         for i in (1..n).rev() {
             let j = (next_u64(rng) as usize) % (i + 1);
             perm.swap(i, j);
