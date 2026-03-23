@@ -92,7 +92,7 @@ Each row is one simulation run:
 
 ```
 dimension,nodes,strategy,traffic,total_packets,delivered,max_congestion,avg_congestion,max_latency,avg_latency,max_hops,avg_hops,per_dim_load,per_dim_max_queue
-8,256,valiant,bit-reversal,256,256,4,1.00,10,5.23,16,8.00,260;258;252;261;255;249;263;258,0;0;0;0;0;0;0;0
+8,256,valiant,bit-reversal,256,256,4,1.02,9,4.50,14,8.13,266;282;268;256;252;254;254;250,0;0;0;0;0;0;0;0
 ```
 
 The `per_dim_load` and `per_dim_max_queue` columns are semicolon-delimited, one value per dimension. This lets you analyze congestion distribution across dimensions.
@@ -173,13 +173,13 @@ Left panel (greedy): congestion spans 7 orders of magnitude depending on traffic
 
 ![Latency vs hops](charts/latency_vs_hops.png)
 
-In the tick-synchronous model, all nodes forward simultaneously, so packets traverse ~2 hops per tick via pipelining. Latency scales linearly with hop count across all patterns. Bit-fixing shows clear separation: complement (16 hops at dim=16) has the highest latency while butterfly (1 hop) has the lowest. Valiant collapses all patterns into a tight band since the random intermediate dominates path length regardless of traffic.
+In the tick-synchronous model, all nodes forward simultaneously, so packets traverse ~2 hops per tick via pipelining. Latency scales linearly with hop count across all patterns. Bit-fixing shows clear separation: complement (16 hops at dim=16) has the highest latency while butterfly (avg 1 hop, max 2) has the lowest. Valiant collapses all patterns into a tight band since the random intermediate dominates path length regardless of traffic.
 
 ### Hop distribution
 
 ![Hop distribution](charts/hop_distribution.png)
 
-Left panel (greedy): hop count is traffic-dependent. Complement always traverses all n dimensions (max distance). Butterfly stays at 1 hop (swaps only bits 0 and n-1). Bit-reversal, transpose, shuffle, and random cluster around n/2 -- the expected Hamming distance for "average" permutations. Right panel (Valiant): the random intermediate roughly doubles path length, pushing all patterns toward n hops. The n/2 reference line shows the expected hops for a single random-to-random leg.
+Left panel (greedy): hop count is traffic-dependent. Complement always traverses all n dimensions (max distance). Butterfly averages 1 hop (swaps only bits 0 and n-1, but packets needing both flips take 2 hops). Bit-reversal, transpose, shuffle, and random cluster around n/2 -- the expected Hamming distance for "average" permutations. Right panel (Valiant): the random intermediate roughly doubles path length, pushing all patterns toward n hops. The n/2 reference line shows the expected hops for a single random-to-random leg.
 
 ## Theory notes
 
@@ -199,9 +199,9 @@ The complement permutation (node x sends to NOT(x)) flips every bit. Under MSB-f
 
 Valiant's two-phase routing sends each packet to a uniformly random intermediate node before routing to the true destination. This guarantees O(n) congestion on *any* permutation -- our data confirms max_congestion of 8--9 at dim=16 across all six traffic patterns.
 
-The cost is path length. Bit-fixing on bit-reversal averages floor(n/2) hops; Valiant averages ~n (the expected Hamming distance of two random nodes is n/2 per phase, times two phases). For "easy" patterns like butterfly (1 hop with bit-fixing), Valiant inflates to ~n hops -- a 16x penalty at dim=16 for no congestion benefit.
+The cost is path length. Bit-fixing on bit-reversal averages floor(n/2) hops; Valiant averages ~n (the expected Hamming distance of two random nodes is n/2 per phase, times two phases). For "easy" patterns like butterfly (avg 1 hop with bit-fixing), Valiant inflates to ~n hops -- a ~16x penalty at dim=16 for no congestion benefit.
 
-The crossover where Valiant becomes worthwhile is visible in the congestion scaling charts around dim 6--8 for adversarial patterns. Valiant first beats bit-fixing at dim=6 (congestion 3 vs. 4). Below that, bit-fixing's congestion is still small enough to beat Valiant's constant overhead.
+The crossover where Valiant becomes worthwhile is visible in the congestion scaling charts around dim 6--8 for adversarial patterns. At dim=6 for bit-reversal, bit-fixing congestion is 4, while Valiant varies across runs (3--5 in our data) -- so Valiant sometimes wins but not consistently. By dim=8, Valiant reliably beats bit-fixing (congestion 4--6 vs. 8 for bit-reversal). Below dim=8, bit-fixing's congestion is still small enough to compete with Valiant's randomized overhead.
 
 ### Odd-dimension fixed points
 
