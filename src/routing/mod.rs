@@ -5,9 +5,11 @@
 //! if the packet has arrived.
 
 mod bitfix;
+mod fault_tolerant;
 mod valiant;
 
 pub use bitfix::BitFixing;
+pub use fault_tolerant::FaultTolerant;
 pub use valiant::Valiant;
 
 use crate::packet::Packet;

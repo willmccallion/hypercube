@@ -91,6 +91,7 @@ impl Node {
         let mut packets_forwarded: u64 = 0;
         let mut packets_delivered: u64 = 0;
         let mut delivery_latencies = Vec::new();
+        let mut delivery_hops = Vec::new();
 
         // Per-dimension overflow queues for backpressure handling.
         let mut overflow: Vec<Vec<Packet>> = vec![Vec::new(); dim];
@@ -123,6 +124,7 @@ impl Node {
                         packets_delivered += 1;
                         let latency = tick.saturating_sub(packet.inject_tick);
                         delivery_latencies.push(latency);
+                        delivery_hops.push(packet.hops);
                     }
                     Some(next) => {
                         // Determine which dimension this neighbor is on.
@@ -165,6 +167,7 @@ impl Node {
             per_link_load,
             max_queue_depth,
             delivery_latencies,
+            delivery_hops,
         }
     }
 }

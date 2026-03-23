@@ -8,7 +8,7 @@ mod permutations;
 mod random;
 
 pub use hotspot::HotSpot;
-pub use permutations::{BitReversal, Complement, Identity, Transpose};
+pub use permutations::{BitReversal, Butterfly, Complement, Identity, Shuffle, Transpose};
 pub use random::RandomPermutation;
 
 use rand::RngCore;

@@ -17,12 +17,28 @@ pub fn write_csv(
     if write_header {
         writeln!(
             writer,
-            "dimension,nodes,strategy,traffic,total_packets,delivered,max_congestion,avg_congestion,max_latency,avg_latency,max_hops,avg_hops"
+            "dimension,nodes,strategy,traffic,total_packets,delivered,\
+             max_congestion,avg_congestion,max_latency,avg_latency,\
+             max_hops,avg_hops,per_dim_load,per_dim_max_queue"
         )?;
     }
+
+    let dim_load: String = stats
+        .per_dim_load
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(";");
+    let dim_queue: String = stats
+        .per_dim_max_queue
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(";");
+
     writeln!(
         writer,
-        "{},{},{},{},{},{},{},{:.2},{},{},{},{:.2}",
+        "{},{},{},{},{},{},{},{:.2},{},{},{},{:.2},{},{}",
         stats.dimension,
         1u32 << stats.dimension,
         stats.routing_strategy,
@@ -35,6 +51,8 @@ pub fn write_csv(
         stats.avg_latency,
         stats.max_hops,
         stats.avg_hops,
+        dim_load,
+        dim_queue,
     )?;
     Ok(())
 }
@@ -54,6 +72,7 @@ mod tests {
             per_link_load: vec![3, 2],
             max_queue_depth: vec![1, 1],
             delivery_latencies: vec![4],
+            delivery_hops: vec![4],
         }];
 
         let stats = SimulationStats::aggregate(2, "bit-fixing", "bit-reversal", 4, node_stats);

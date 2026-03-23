@@ -4,6 +4,7 @@
 //! independent async task, implementing and comparing routing algorithms
 //! including bit-fixing and Valiant's two-phase randomized routing.
 
+pub mod cli;
 pub mod engine;
 pub mod node;
 pub mod packet;

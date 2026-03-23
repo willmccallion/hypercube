@@ -17,6 +17,8 @@ pub struct NodeStats {
     pub max_queue_depth: Vec<u32>,
     /// Delivery latencies (in ticks) for packets that terminated here.
     pub delivery_latencies: Vec<u64>,
+    /// Hop counts for packets that reached their destination at this node.
+    pub delivery_hops: Vec<u32>,
 }
 
 /// Aggregated statistics for a complete simulation run.
@@ -44,6 +46,10 @@ pub struct SimulationStats {
     pub max_hops: u32,
     /// Average hop count across all delivered packets.
     pub avg_hops: f64,
+    /// Per-dimension total link load, summed across all nodes.
+    pub per_dim_load: Vec<u64>,
+    /// Per-dimension maximum queue depth observed across all nodes.
+    pub per_dim_max_queue: Vec<u32>,
     /// Per-node detailed statistics.
     pub per_node: Vec<NodeStats>,
 }
@@ -89,12 +95,34 @@ impl SimulationStats {
             all_latencies.iter().sum::<u64>() as f64 / all_latencies.len() as f64
         };
 
-        // Hop count = forward count along the path. For a delivered packet,
-        // the total hops are reflected in the latencies (hops ≤ latency in
-        // tick-synchronous mode). We approximate max/avg hops from latencies
-        // for now — the engine can provide exact hop counts if needed.
-        let max_hops = max_latency as u32;
-        let avg_hops = avg_latency;
+        let all_hops: Vec<u32> = per_node
+            .iter()
+            .flat_map(|n| n.delivery_hops.iter().copied())
+            .collect();
+        let max_hops = all_hops.iter().copied().max().unwrap_or(0);
+        let avg_hops = if all_hops.is_empty() {
+            0.0
+        } else {
+            all_hops.iter().copied().map(f64::from).sum::<f64>() / all_hops.len() as f64
+        };
+
+        let dim = dimension as usize;
+        let mut per_dim_load = vec![0u64; dim];
+        let mut per_dim_max_queue = vec![0u32; dim];
+        for node in &per_node {
+            for (i, &load) in node.per_link_load.iter().enumerate() {
+                if let Some(total) = per_dim_load.get_mut(i) {
+                    *total += load;
+                }
+            }
+            for (i, &depth) in node.max_queue_depth.iter().enumerate() {
+                if let Some(current_max) = per_dim_max_queue.get_mut(i)
+                    && depth > *current_max
+                {
+                    *current_max = depth;
+                }
+            }
+        }
 
         Self {
             dimension,
@@ -108,6 +136,8 @@ impl SimulationStats {
             avg_latency,
             max_hops,
             avg_hops,
+            per_dim_load,
+            per_dim_max_queue,
             per_node,
         }
     }

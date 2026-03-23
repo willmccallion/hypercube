@@ -48,6 +48,19 @@ pub struct Cli {
     /// Channel buffer capacity per inter-node link.
     #[arg(long, default_value_t = 256)]
     pub channel_capacity: usize,
+
+    /// Number of random node faults to inject.
+    #[arg(long, default_value_t = 0)]
+    pub faults: usize,
+
+    /// Traffic patterns for sweep mode ("all" or comma-separated, e.g.,
+    /// "bit-reversal,complement,shuffle").
+    #[arg(long)]
+    pub traffic_range: Option<String>,
+
+    /// Channel capacity range for sweep mode (start:end:step, e.g., "64:512:64").
+    #[arg(long)]
+    pub capacity_range: Option<String>,
 }
 
 /// Routing strategy selection.
@@ -57,7 +70,9 @@ pub enum Strategy {
     Bitfix,
     /// Valiant's two-phase randomized routing.
     Valiant,
-    /// Run both strategies (for sweep mode).
+    /// Fault-tolerant routing with misrouting.
+    FaultTolerant,
+    /// Run both bit-fixing and Valiant (for sweep mode).
     Both,
 }
 
@@ -74,4 +89,8 @@ pub enum Traffic {
     Transpose,
     /// Uniform random permutation.
     Random,
+    /// Swap bit 0 and bit n-1 (butterfly cross-wiring).
+    Butterfly,
+    /// Circular left-shift of the address bits (perfect shuffle).
+    Shuffle,
 }

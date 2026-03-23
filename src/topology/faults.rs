@@ -1,5 +1,7 @@
 use std::collections::HashSet;
 
+use rand::RngCore;
+
 use super::{Hypercube, NodeId};
 
 /// Tracks failed nodes and links in a hypercube.
@@ -60,6 +62,24 @@ impl FaultSet {
     /// Returns `true` if no faults have been registered.
     pub fn is_empty(&self) -> bool {
         self.failed_nodes.is_empty() && self.failed_links.is_empty()
+    }
+
+    /// Generates a fault set with `n_nodes` random failed nodes.
+    ///
+    /// Nodes are selected uniformly at random without replacement from the
+    /// cube's node set.
+    pub fn random_node_faults(
+        cube: &Hypercube,
+        n_nodes: usize,
+        rng: &mut dyn RngCore,
+    ) -> Self {
+        let mut faults = Self::new();
+        let node_count = cube.node_count() as u16;
+        while faults.failed_node_count() < n_nodes {
+            let id = NodeId::new((rng.next_u32() as u16) % node_count);
+            faults.fail_node(id);
+        }
+        faults
     }
 
     /// Iterates over healthy neighbors of a node, excluding neighbors
