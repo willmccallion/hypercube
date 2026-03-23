@@ -70,6 +70,7 @@ mod tests {
             },
             hops: 0,
             inject_tick: 0,
+            payload: (),
         }
     }
 

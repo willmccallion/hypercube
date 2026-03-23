@@ -1,14 +1,15 @@
+use std::collections::VecDeque;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU64;
-
-use tokio::sync::mpsc;
 
 use crate::routing::RoutingStrategy;
 use crate::topology::{FaultSet, Hypercube};
 
-use super::{Engine, NodeConfig};
+use super::{Engine, LinkBuffer, NodeState};
 
 /// Configuration for building a simulation engine.
+///
+/// Used by both [`Engine::build`] (sync) and [`AsyncEngine::build`] (async,
+/// requires the `async` feature).
 pub struct SimulationConfig {
     /// Hypercube dimension.
     pub dimension: u8,
@@ -16,7 +17,8 @@ pub struct SimulationConfig {
     pub strategy: Arc<dyn RoutingStrategy>,
     /// Fault configuration (empty for fault-free simulation).
     pub faults: FaultSet,
-    /// Channel buffer capacity per link.
+    /// Channel buffer capacity per link (used by the async engine; reserved
+    /// for future backpressure in the sync engine).
     pub channel_capacity: usize,
     /// Base RNG seed for reproducibility.
     pub seed: u64,
@@ -34,9 +36,44 @@ impl std::fmt::Debug for SimulationConfig {
     }
 }
 
-/// Builds the simulation engine: creates channels and pre-assembles node
-/// configs. Tasks are **not** spawned here — that happens in [`Engine::run`].
-pub(super) fn build(config: SimulationConfig) -> Engine {
+/// Builds a synchronous simulation engine.
+///
+/// Allocates per-node state, double-buffered link queues, and injection
+/// buffers. No async runtime is required.
+pub(super) fn build_sync(config: SimulationConfig) -> Engine {
+    let cube = Hypercube::new(config.dimension);
+    let dim = config.dimension as usize;
+    let node_count = cube.node_count() as usize;
+
+    let nodes: Vec<NodeState> = (0..node_count)
+        .map(|i| NodeState::new(dim, config.seed.wrapping_add(i as u64)))
+        .collect();
+
+    let links: Vec<Vec<LinkBuffer>> = (0..node_count)
+        .map(|_| (0..dim).map(|_| LinkBuffer::new()).collect())
+        .collect();
+
+    let inject: Vec<VecDeque<_>> = (0..node_count).map(|_| VecDeque::new()).collect();
+
+    Engine {
+        cube,
+        strategy: config.strategy,
+        faults: config.faults,
+        nodes,
+        links,
+        inject,
+        current_tick: 0,
+        total_injected: 0,
+    }
+}
+
+/// Builds an async simulation engine with Tokio channels and per-node configs.
+#[cfg(feature = "async")]
+pub(super) fn build_async(config: SimulationConfig) -> super::AsyncEngine {
+    use std::sync::atomic::AtomicU64;
+    use tokio::sync::mpsc;
+    use super::async_engine::AsyncNodeConfig;
+
     let cube = Arc::new(Hypercube::new(config.dimension));
     let dim = config.dimension as usize;
     let node_count = cube.node_count() as usize;
@@ -54,10 +91,6 @@ pub(super) fn build(config: SimulationConfig) -> Engine {
     }
 
     // Create inter-node channels.
-    //
-    // For each edge (node, neighbor) along dimension d, we create a channel
-    // pair. The sender is held by the source node, the receiver by the
-    // destination node. Each undirected edge produces two directed channels.
     let mut senders: Vec<Vec<Option<mpsc::Sender<crate::packet::Packet>>>> =
         (0..node_count)
             .map(|_| (0..dim).map(|_| None).collect())
@@ -86,7 +119,7 @@ pub(super) fn build(config: SimulationConfig) -> Engine {
         }
     }
 
-    // Assemble per-node configs (channels + metadata, no spawning yet).
+    // Assemble per-node configs.
     let mut node_configs = Vec::with_capacity(node_count);
     for node_idx in 0..node_count {
         let node_tx: Vec<_> = senders[node_idx]
@@ -114,7 +147,7 @@ pub(super) fn build(config: SimulationConfig) -> Engine {
             rx
         });
 
-        node_configs.push(NodeConfig {
+        node_configs.push(AsyncNodeConfig {
             id: crate::topology::NodeId::new(node_idx as u16),
             rx: node_rx,
             tx: node_tx,
@@ -123,7 +156,7 @@ pub(super) fn build(config: SimulationConfig) -> Engine {
         });
     }
 
-    Engine {
+    super::AsyncEngine {
         node_configs,
         inject_txs,
         in_flight,

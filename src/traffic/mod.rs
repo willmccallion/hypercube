@@ -41,5 +41,6 @@ pub(crate) const fn make_packet(id: u64, source: NodeId, destination: NodeId) ->
         phase: Phase::Direct,
         hops: 0,
         inject_tick: 0,
+        payload: (),
     }
 }

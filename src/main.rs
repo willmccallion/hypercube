@@ -84,7 +84,7 @@ fn parse_capacity_range(s: &str) -> Vec<usize> {
     }
 }
 
-async fn run_single(
+fn run_single(
     dim: u8,
     strategy: Arc<dyn RoutingStrategy>,
     traffic: &dyn TrafficPattern,
@@ -103,21 +103,21 @@ async fn run_single(
 
     let config = SimulationConfig {
         dimension: dim,
-        strategy: Arc::clone(&strategy),
+        strategy,
         faults,
         channel_capacity,
         seed,
     };
 
-    let engine = Engine::build(config);
+    let mut engine = Engine::build(config);
     engine.inject(traffic, &mut rng);
     let traffic_name = traffic.name();
-    engine.run(traffic_name, max_ticks).await
+    engine.run(traffic_name, max_ticks)
 }
 
 /// Runs a parameter sweep across dimensions, capacities, traffic patterns,
 /// strategies, and runs.
-async fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
+fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
     let (lo, hi) = parse_range(&cli.dim_range);
 
     let traffic_variants: Vec<Traffic> = cli
@@ -165,8 +165,7 @@ async fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
                             seed,
                             capacity,
                             cli.faults,
-                        )
-                        .await;
+                        );
 
                         eprintln!(
                             "dim={dim:>2} nodes={:>5} cap={capacity:<4} strategy={:<10} traffic={:<12} max_congestion={} delivered={}/{}",
@@ -188,8 +187,7 @@ async fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
     results
 }
 
-#[tokio::main]
-async fn main() {
+fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -197,7 +195,7 @@ async fn main() {
     let cli = Cli::parse();
 
     let results = if cli.sweep {
-        run_sweep(&cli).await
+        run_sweep(&cli)
     } else {
         let strategy = make_strategy(cli.strategy);
         let traffic = make_traffic(cli.traffic);
@@ -209,8 +207,7 @@ async fn main() {
             cli.seed,
             cli.channel_capacity,
             cli.faults,
-        )
-        .await;
+        );
 
         eprintln!(
             "dim={} nodes={} strategy={} traffic={} max_congestion={} delivered={}/{}",

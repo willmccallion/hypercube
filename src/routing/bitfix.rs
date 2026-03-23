@@ -80,6 +80,7 @@ mod tests {
             phase: Phase::Direct,
             hops: 0,
             inject_tick: 0,
+            payload: (),
         }
     }
 

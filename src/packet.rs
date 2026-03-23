@@ -3,8 +3,12 @@
 use crate::topology::NodeId;
 
 /// A packet being routed through the hypercube.
+///
+/// The type parameter `T` allows embedding arbitrary payloads (e.g., coherence
+/// messages when used as a network-on-chip transport). The default `()` keeps the packet
+/// lightweight for standalone routing experiments.
 #[derive(Debug, Clone)]
-pub struct Packet {
+pub struct Packet<T = ()> {
     /// Unique packet identifier.
     pub id: u64,
     /// The node that originally injected this packet.
@@ -17,6 +21,8 @@ pub struct Packet {
     pub hops: u32,
     /// Logical tick at which the packet was injected.
     pub inject_tick: u64,
+    /// Application-level payload carried by this packet.
+    pub payload: T,
 }
 
 /// Routing phase for a packet.
