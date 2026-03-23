@@ -1,0 +1,76 @@
+[package]
+name = "hypercube"
+version = "0.1.0"
+edition = "2024"
+authors = ["Will McCallion"]
+license = "MIT OR Apache-2.0"
+description = "Distributed hypercube routing simulator with theoretical congestion verification."
+repository = "https://github.com/willmccallion/hypercube"
+homepage = "https://github.com/willmccallion/hypercube"
+readme = "README.md"
+keywords = ["hypercube", "routing", "distributed", "algorithms", "simulator"]
+categories = ["algorithms", "simulation"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+rand = "0.9"
+rand_chacha = "0.9"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+csv = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+thiserror = "2"
+
+[dev-dependencies]
+proptest = "1"
+
+[profile.release]
+opt-level     = 3
+lto           = "fat"
+codegen-units = 1
+panic         = "abort"
+strip         = "symbols"
+incremental   = false
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[lints.rust]
+missing_docs = "warn"
+missing_debug_implementations = "warn"
+unused_results = "deny"
+rust_2018_idioms = { level = "deny", priority = -1 }
+
+[lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
+cargo = { level = "deny", priority = -1 }
+
+unwrap_used = "deny"
+expect_used = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+similar_names = "allow"
+unreadable_literal = "allow"
+many_single_char_names = "allow"
+inline_always = "allow"
+
+cast_precision_loss = "allow"
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_possible_wrap = "allow"
+cast_lossless = "allow"
+multiple_crate_versions = "allow"
+return_self_not_must_use = "allow"
+
+[lints.rustdoc]
+all = "deny"
+missing_crate_level_docs = "deny"
+broken_intra_doc_links = "deny"
