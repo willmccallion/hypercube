@@ -24,7 +24,7 @@ use rand::SeedableRng;
 use rand::rngs::SmallRng;
 use rand_chacha::ChaCha8Rng;
 
-use crate::packet::{Packet, Phase};
+use crate::packet::{Packet, PacketHeader, Phase};
 use crate::routing::RoutingStrategy;
 use crate::stats::{NodeStats, SimulationStats};
 use crate::topology::{FaultSet, Hypercube, NodeId};
@@ -36,14 +36,14 @@ use crate::traffic::TrafficPattern;
 /// each tick, `write` is swapped into `read`, making those packets available
 /// to the destination node on the *next* tick. This prevents a packet from
 /// advancing more than one hop per tick.
-struct LinkBuffer {
+struct LinkBuffer<T> {
     /// Packets deposited last tick — available for reading this tick.
-    read: VecDeque<Packet>,
+    read: VecDeque<Packet<T>>,
     /// Packets being written this tick — not yet visible to destinations.
-    write: VecDeque<Packet>,
+    write: VecDeque<Packet<T>>,
 }
 
-impl LinkBuffer {
+impl<T> LinkBuffer<T> {
     const fn new() -> Self {
         Self {
             read: VecDeque::new(),
@@ -105,13 +105,15 @@ impl NodeState {
 
 /// A synchronous simulation engine for hypercube routing.
 ///
-/// Created by [`Engine::build`]. Call [`Engine::inject`] to add traffic,
-/// then [`Engine::run`] (or repeated [`Engine::tick`] calls) to execute.
+/// Generic over payload type `T`. The default `Engine` (i.e., `Engine<()>`)
+/// is used for standalone routing experiments with [`TrafficPattern`]s.
+/// Embed as `Engine<YourMessage>` to carry application payloads through
+/// the network (e.g., cache coherence messages in a many-core simulator).
 ///
-/// This is the primary engine for embedding in other simulators (e.g., as a
-/// network-on-chip transport layer). For standalone benchmarks with per-node async tasks,
-/// see [`AsyncEngine`] (requires the `async` feature).
-pub struct Engine {
+/// Created by [`Engine::build`]. Call [`Engine::inject_one`] (or
+/// [`Engine::inject`] for `Engine<()>`) to add traffic, then advance
+/// with [`Engine::tick`] and collect results with [`Engine::drain_delivered`].
+pub struct Engine<T = ()> {
     /// The hypercube topology.
     cube: Hypercube,
     /// The routing strategy.
@@ -122,59 +124,80 @@ pub struct Engine {
     nodes: Vec<NodeState>,
     /// Double-buffered link queues. `links[src][dim]` holds packets sent
     /// from `src` along dimension `dim`.
-    links: Vec<Vec<LinkBuffer>>,
+    links: Vec<Vec<LinkBuffer<T>>>,
     /// Injection queues, one per node.
-    inject: Vec<VecDeque<Packet>>,
+    inject: Vec<VecDeque<Packet<T>>>,
+    /// Packets delivered during the most recent tick(s), waiting to be drained.
+    delivered: Vec<Packet<T>>,
     /// Current tick counter.
     current_tick: u64,
-    /// Total packets injected (for stats).
+    /// Total packets injected (for stats and in-flight tracking).
     total_injected: u64,
+    /// Total packets delivered so far.
+    total_delivered: u64,
+    /// Next packet ID for [`inject_one`](Engine::inject_one).
+    next_packet_id: u64,
 }
 
-impl std::fmt::Debug for Engine {
+impl<T> std::fmt::Debug for Engine<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
             .field("node_count", &self.nodes.len())
             .field("dimension", &self.cube.dim())
             .field("strategy", &self.strategy.name())
             .field("current_tick", &self.current_tick)
+            .field("in_flight", &(self.total_injected - self.total_delivered))
             .finish_non_exhaustive()
     }
 }
 
-impl Engine {
+// --- Methods available for any payload type T ---
+
+impl<T: Send + 'static> Engine<T> {
     /// Builds a new synchronous simulation engine from the given configuration.
     pub fn build(config: SimulationConfig) -> Self {
         builder::build_sync(config)
     }
 
-    /// Injects packets from a traffic pattern into the simulation.
+    /// Injects a single packet with the given source, destination, and payload.
     ///
-    /// For Valiant routing, each packet is assigned a random intermediate node.
-    pub fn inject(
-        &mut self,
-        pattern: &dyn TrafficPattern,
-        rng: &mut dyn RngCore,
-    ) {
-        let mut packets = pattern.generate(&self.cube, rng);
+    /// Returns the assigned packet ID, which will appear in the delivered
+    /// [`Packet`] for correlation.
+    ///
+    /// The packet's phase is set based on the engine's routing strategy:
+    /// Valiant routing assigns a random intermediate node; all other
+    /// strategies use direct routing.
+    pub fn inject_one(&mut self, src: NodeId, dst: NodeId, payload: T) -> u64 {
+        let id = self.next_packet_id;
+        self.next_packet_id += 1;
 
-        // If the strategy is Valiant, assign random intermediates.
-        let is_valiant = self.strategy.name() == "valiant";
-        if is_valiant {
-            let mut intermediate_rng = ChaCha8Rng::seed_from_u64(rng.next_u64());
+        let phase = if self.strategy.name() == "valiant" {
             let node_count = self.cube.node_count();
-            for packet in &mut packets {
-                let intermediate = NodeId::new((intermediate_rng.next_u32() % node_count) as u16);
-                packet.phase = Phase::ValiantPhase1 { intermediate };
+            let src_idx = src.raw() as usize;
+            let intermediate_raw = self.nodes[src_idx].rng.next_u32() % node_count;
+            Phase::ValiantPhase1 {
+                intermediate: NodeId::new(intermediate_raw as u16),
             }
-        }
+        } else {
+            Phase::Direct
+        };
 
-        for mut packet in packets {
-            packet.inject_tick = 0;
-            let src_idx = packet.source.raw() as usize;
-            self.inject[src_idx].push_back(packet);
-            self.total_injected += 1;
-        }
+        let packet = Packet {
+            header: PacketHeader {
+                id,
+                source: src,
+                destination: dst,
+                phase,
+                hops: 0,
+                inject_tick: self.current_tick,
+            },
+            payload,
+        };
+
+        let src_idx = src.raw() as usize;
+        self.inject[src_idx].push_back(packet);
+        self.total_injected += 1;
+        id
     }
 
     /// Advances the simulation by one tick.
@@ -182,16 +205,16 @@ impl Engine {
     /// All nodes drain their incoming link buffers and injection queues,
     /// route each packet, then write outgoing packets to the appropriate
     /// link buffers. A final swap makes this tick's writes readable next tick.
+    ///
+    /// Delivered packets are accumulated and retrievable via
+    /// [`drain_delivered`](Engine::drain_delivered).
     pub fn tick(&mut self) {
         let dim = self.cube.dim() as usize;
         let node_count = self.nodes.len();
         let tick = self.current_tick;
 
         // Phase 1: Collect incoming packets for each node.
-        //
-        // Node `i` reads from `links[neighbor][d].read` for each dimension `d`,
-        // where `neighbor = i ^ (1 << d)`. We also drain injection queues.
-        let mut incoming: Vec<Vec<Packet>> = (0..node_count).map(|_| Vec::new()).collect();
+        let mut incoming: Vec<Vec<Packet<T>>> = (0..node_count).map(|_| Vec::new()).collect();
 
         for (node_idx, (buf, inject_q)) in incoming
             .iter_mut()
@@ -215,7 +238,7 @@ impl Engine {
 
             for mut packet in packets {
                 let next = self.strategy.next_hop(
-                    &mut packet,
+                    &mut packet.header,
                     current,
                     &self.cube,
                     &self.faults,
@@ -229,6 +252,8 @@ impl Engine {
                         let latency = tick.saturating_sub(packet.inject_tick);
                         self.nodes[node_idx].delivery_latencies.push(latency);
                         self.nodes[node_idx].delivery_hops.push(packet.hops);
+                        self.total_delivered += 1;
+                        self.delivered.push(packet);
                     }
                     Some(next_node) => {
                         let diff = current.differing_bits(next_node);
@@ -257,15 +282,91 @@ impl Engine {
         }
 
         for src_links in &mut self.links {
-            for buf in src_links {
-                buf.swap();
+            for link_buf in src_links {
+                link_buf.swap();
             }
         }
 
         self.current_tick += 1;
     }
 
+    /// Returns packets delivered since the last call to `drain_delivered`.
+    ///
+    /// Each delivered [`Packet<T>`] carries its original payload intact,
+    /// along with routing metadata (source, destination, hops, latency).
+    pub fn drain_delivered(&mut self) -> Vec<Packet<T>> {
+        std::mem::take(&mut self.delivered)
+    }
+
+    /// Returns the current tick count.
+    pub const fn tick_count(&self) -> u64 {
+        self.current_tick
+    }
+
+    /// Returns the number of packets currently in the network (injected but
+    /// not yet delivered).
+    ///
+    /// When this reaches zero, all injected packets have been delivered.
+    pub const fn in_flight(&self) -> u64 {
+        self.total_injected - self.total_delivered
+    }
+
+    /// Returns the total number of packets injected so far.
+    pub const fn total_injected(&self) -> u64 {
+        self.total_injected
+    }
+
+    /// Returns the total number of packets delivered so far.
+    pub const fn total_delivered(&self) -> u64 {
+        self.total_delivered
+    }
+
+    /// Returns a reference to the hypercube topology.
+    pub const fn cube(&self) -> &Hypercube {
+        &self.cube
+    }
+}
+
+// --- Methods only available for the default payload (standalone experiments) ---
+
+impl Engine<()> {
+    /// Injects packets from a traffic pattern into the simulation.
+    ///
+    /// For Valiant routing, each packet is assigned a random intermediate node.
+    ///
+    /// This method is only available on `Engine<()>` since [`TrafficPattern`]
+    /// generates unit-payload packets for routing experiments.
+    pub fn inject(
+        &mut self,
+        pattern: &dyn TrafficPattern,
+        rng: &mut dyn RngCore,
+    ) {
+        let mut packets = pattern.generate(&self.cube, rng);
+
+        // If the strategy is Valiant, assign random intermediates.
+        let is_valiant = self.strategy.name() == "valiant";
+        if is_valiant {
+            let mut intermediate_rng = ChaCha8Rng::seed_from_u64(rng.next_u64());
+            let node_count = self.cube.node_count();
+            for packet in &mut packets {
+                let intermediate = NodeId::new((intermediate_rng.next_u32() % node_count) as u16);
+                packet.header.phase = Phase::ValiantPhase1 { intermediate };
+            }
+        }
+
+        for mut packet in packets {
+            packet.header.inject_tick = 0;
+            let src_idx = packet.source.raw() as usize;
+            self.inject[src_idx].push_back(packet);
+            self.total_injected += 1;
+        }
+    }
+
     /// Runs the simulation for `max_ticks` ticks and returns aggregated stats.
+    ///
+    /// This is a convenience method for standalone experiments. For embedded
+    /// use, call [`tick`](Engine::tick) and [`drain_delivered`](Engine::drain_delivered)
+    /// in your own loop.
     pub fn run(
         mut self,
         traffic_name: &str,

@@ -95,13 +95,13 @@ impl AsyncEngine {
             let node_count = self.cube.node_count();
             for packet in &mut packets {
                 let intermediate = NodeId::new((intermediate_rng.next_u32() % node_count) as u16);
-                packet.phase = Phase::ValiantPhase1 { intermediate };
+                packet.header.phase = Phase::ValiantPhase1 { intermediate };
             }
         }
 
         // Send each packet to the appropriate node's injection channel.
         for mut packet in packets {
-            packet.inject_tick = 0;
+            packet.header.inject_tick = 0;
             let src_idx = packet.source.raw() as usize;
             if let Err(e) = self.inject_txs[src_idx].try_send(packet) {
                 tracing::warn!("failed to inject packet at node {src_idx}: {e}");

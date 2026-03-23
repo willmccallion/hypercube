@@ -1,6 +1,6 @@
 use rand::RngCore;
 
-use crate::packet::{Packet, Phase};
+use crate::packet::{PacketHeader, Phase};
 use crate::topology::{FaultSet, Hypercube, NodeId};
 
 use super::RoutingStrategy;
@@ -22,30 +22,30 @@ pub struct Valiant;
 impl RoutingStrategy for Valiant {
     fn next_hop(
         &self,
-        packet: &mut Packet,
+        header: &mut PacketHeader,
         current: NodeId,
         cube: &Hypercube,
         faults: &FaultSet,
         _rng: &mut dyn RngCore,
     ) -> Option<NodeId> {
-        match packet.phase {
+        match header.phase {
             Phase::ValiantPhase1 { intermediate } => {
                 // Route toward the intermediate node.
                 if current == intermediate {
                     // Arrived at intermediate — transition to Phase 2.
-                    packet.phase = Phase::ValiantPhase2;
-                    BitFixing::bit_fix_step(current, packet.destination, cube, faults)
+                    header.phase = Phase::ValiantPhase2;
+                    BitFixing::bit_fix_step(current, header.destination, cube, faults)
                 } else {
                     BitFixing::bit_fix_step(current, intermediate, cube, faults)
                 }
             }
             Phase::ValiantPhase2 => {
                 // Route toward the true destination.
-                BitFixing::bit_fix_step(current, packet.destination, cube, faults)
+                BitFixing::bit_fix_step(current, header.destination, cube, faults)
             }
             Phase::Direct => {
                 // Fallback: treat as plain bit-fixing.
-                BitFixing::bit_fix_step(current, packet.destination, cube, faults)
+                BitFixing::bit_fix_step(current, header.destination, cube, faults)
             }
         }
     }
@@ -58,18 +58,21 @@ impl RoutingStrategy for Valiant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::Packet;
     use crate::topology::NodeId;
 
     fn make_valiant_packet(src: u16, dst: u16, intermediate: u16) -> Packet {
         Packet {
-            id: 0,
-            source: NodeId::new(src),
-            destination: NodeId::new(dst),
-            phase: Phase::ValiantPhase1 {
-                intermediate: NodeId::new(intermediate),
+            header: PacketHeader {
+                id: 0,
+                source: NodeId::new(src),
+                destination: NodeId::new(dst),
+                phase: Phase::ValiantPhase1 {
+                    intermediate: NodeId::new(intermediate),
+                },
+                hops: 0,
+                inject_tick: 0,
             },
-            hops: 0,
-            inject_tick: 0,
             payload: (),
         }
     }
@@ -87,7 +90,7 @@ mod tests {
 
         // Route until we either arrive at intermediate or run out of hops.
         for _ in 0..20 {
-            if let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+            if let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
                 current = next;
             } else {
                 break;
@@ -117,7 +120,7 @@ mod tests {
             let mut current = NodeId::new(src);
             let mut hops = 0u32;
 
-            while let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+            while let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
                 current = next;
                 hops += 1;
                 assert!(hops <= 2 * u32::from(cube.dim()), "too many hops");
@@ -145,7 +148,7 @@ mod tests {
             let mut current = NodeId::new(src);
             let mut actual_hops = 0u32;
 
-            while let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+            while let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
                 current = next;
                 actual_hops += 1;
             }
@@ -168,7 +171,7 @@ mod tests {
 
         // First call should transition to Phase 2 and return the first hop
         // toward the destination.
-        let next = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng);
+        let next = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng);
         assert_eq!(packet.phase, Phase::ValiantPhase2);
         assert!(next.is_some());
     }
@@ -188,7 +191,7 @@ mod tests {
         let hamming = NodeId::new(0).hamming_distance(NodeId::new(15));
         let mut hops = 0u32;
 
-        while let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+        while let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
             current = next;
             hops += 1;
         }

@@ -1,6 +1,6 @@
 use rand::RngCore;
 
-use crate::packet::{Packet, Phase};
+use crate::packet::{PacketHeader, Phase};
 use crate::topology::{FaultSet, Hypercube, NodeId};
 
 use super::RoutingStrategy;
@@ -90,23 +90,23 @@ impl FaultTolerant {
 impl RoutingStrategy for FaultTolerant {
     fn next_hop(
         &self,
-        packet: &mut Packet,
+        header: &mut PacketHeader,
         current: NodeId,
         cube: &Hypercube,
         faults: &FaultSet,
         rng: &mut dyn RngCore,
     ) -> Option<NodeId> {
-        match packet.phase {
+        match header.phase {
             Phase::ValiantPhase1 { intermediate } => {
                 if current == intermediate {
-                    packet.phase = Phase::ValiantPhase2;
-                    Self::step(current, packet.destination, cube, faults, rng)
+                    header.phase = Phase::ValiantPhase2;
+                    Self::step(current, header.destination, cube, faults, rng)
                 } else {
                     Self::step(current, intermediate, cube, faults, rng)
                 }
             }
             Phase::ValiantPhase2 | Phase::Direct => {
-                Self::step(current, packet.destination, cube, faults, rng)
+                Self::step(current, header.destination, cube, faults, rng)
             }
         }
     }
@@ -119,15 +119,18 @@ impl RoutingStrategy for FaultTolerant {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::packet::Packet;
 
     fn make_packet(src: u16, dst: u16) -> Packet {
         Packet {
-            id: 0,
-            source: NodeId::new(src),
-            destination: NodeId::new(dst),
-            phase: Phase::Direct,
-            hops: 0,
-            inject_tick: 0,
+            header: PacketHeader {
+                id: 0,
+                source: NodeId::new(src),
+                destination: NodeId::new(dst),
+                phase: Phase::Direct,
+                hops: 0,
+                inject_tick: 0,
+            },
             payload: (),
         }
     }
@@ -148,7 +151,7 @@ mod tests {
                 let mut hops = 0u32;
 
                 while let Some(next) =
-                    strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng)
+                    strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng)
                 {
                     current = next;
                     hops += 1;
@@ -177,7 +180,7 @@ mod tests {
         let mut hops = 0u32;
 
         while let Some(next) =
-            strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng)
+            strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng)
         {
             current = next;
             hops += 1;
@@ -216,7 +219,7 @@ mod tests {
                 let mut hops = 0u32;
 
                 while let Some(next) =
-                    strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng)
+                    strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng)
                 {
                     current = next;
                     hops += 1;
@@ -251,7 +254,7 @@ mod tests {
         let mut hops = 0u32;
 
         while let Some(next) =
-            strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng)
+            strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng)
         {
             current = next;
             hops += 1;
@@ -274,7 +277,7 @@ mod tests {
         faults.fail_node(NodeId::new(4));
 
         let mut packet = make_packet(0, 7);
-        let result = strategy.next_hop(&mut packet, NodeId::new(0), &cube, &faults, &mut rng);
+        let result = strategy.next_hop(&mut packet.header, NodeId::new(0), &cube, &faults, &mut rng);
         assert!(result.is_none(), "isolated node should return None");
     }
 }

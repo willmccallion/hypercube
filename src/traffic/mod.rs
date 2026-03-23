@@ -13,7 +13,7 @@ pub use random::RandomPermutation;
 
 use rand::RngCore;
 
-use crate::packet::{Packet, Phase};
+use crate::packet::{Packet, PacketHeader, Phase};
 use crate::topology::{Hypercube, NodeId};
 
 /// A traffic pattern that generates packets for a routing experiment.
@@ -35,12 +35,14 @@ pub trait TrafficPattern: Send + Sync {
 /// assigns Valiant intermediates before injection if needed.
 pub(crate) const fn make_packet(id: u64, source: NodeId, destination: NodeId) -> Packet {
     Packet {
-        id,
-        source,
-        destination,
-        phase: Phase::Direct,
-        hops: 0,
-        inject_tick: 0,
+        header: PacketHeader {
+            id,
+            source,
+            destination,
+            phase: Phase::Direct,
+            hops: 0,
+            inject_tick: 0,
+        },
         payload: (),
     }
 }

@@ -10,6 +10,8 @@ use super::{Engine, LinkBuffer, NodeState};
 ///
 /// Used by both [`Engine::build`] (sync) and [`AsyncEngine::build`] (async,
 /// requires the `async` feature).
+///
+/// [`AsyncEngine::build`]: super::AsyncEngine::build
 pub struct SimulationConfig {
     /// Hypercube dimension.
     pub dimension: u8,
@@ -40,7 +42,7 @@ impl std::fmt::Debug for SimulationConfig {
 ///
 /// Allocates per-node state, double-buffered link queues, and injection
 /// buffers. No async runtime is required.
-pub(super) fn build_sync(config: SimulationConfig) -> Engine {
+pub(super) fn build_sync<T: Send + 'static>(config: SimulationConfig) -> Engine<T> {
     let cube = Hypercube::new(config.dimension);
     let dim = config.dimension as usize;
     let node_count = cube.node_count() as usize;
@@ -49,7 +51,7 @@ pub(super) fn build_sync(config: SimulationConfig) -> Engine {
         .map(|i| NodeState::new(dim, config.seed.wrapping_add(i as u64)))
         .collect();
 
-    let links: Vec<Vec<LinkBuffer>> = (0..node_count)
+    let links: Vec<Vec<LinkBuffer<T>>> = (0..node_count)
         .map(|_| (0..dim).map(|_| LinkBuffer::new()).collect())
         .collect();
 
@@ -62,8 +64,11 @@ pub(super) fn build_sync(config: SimulationConfig) -> Engine {
         nodes,
         links,
         inject,
+        delivered: Vec::new(),
         current_tick: 0,
         total_injected: 0,
+        total_delivered: 0,
+        next_packet_id: 0,
     }
 }
 

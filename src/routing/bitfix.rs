@@ -1,6 +1,6 @@
 use rand::RngCore;
 
-use crate::packet::Packet;
+use crate::packet::PacketHeader;
 use crate::topology::{FaultSet, Hypercube, NodeId};
 
 use super::RoutingStrategy;
@@ -53,13 +53,13 @@ impl BitFixing {
 impl RoutingStrategy for BitFixing {
     fn next_hop(
         &self,
-        packet: &mut Packet,
+        header: &mut PacketHeader,
         current: NodeId,
         cube: &Hypercube,
         faults: &FaultSet,
         _rng: &mut dyn RngCore,
     ) -> Option<NodeId> {
-        Self::bit_fix_step(current, packet.destination, cube, faults)
+        Self::bit_fix_step(current, header.destination, cube, faults)
     }
 
     fn name(&self) -> &'static str {
@@ -70,16 +70,18 @@ impl RoutingStrategy for BitFixing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::packet::Phase;
+    use crate::packet::{Packet, Phase};
 
     fn make_packet(src: u16, dst: u16) -> Packet {
         Packet {
-            id: 0,
-            source: NodeId::new(src),
-            destination: NodeId::new(dst),
-            phase: Phase::Direct,
-            hops: 0,
-            inject_tick: 0,
+            header: PacketHeader {
+                id: 0,
+                source: NodeId::new(src),
+                destination: NodeId::new(dst),
+                phase: Phase::Direct,
+                hops: 0,
+                inject_tick: 0,
+            },
             payload: (),
         }
     }
@@ -124,7 +126,7 @@ mod tests {
                 let mut current = NodeId::new(src);
                 let mut actual_hops = 0u32;
 
-                while let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+                while let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
                     current = next;
                     actual_hops += 1;
                     assert!(actual_hops <= expected_hops, "exceeded expected hops");
@@ -148,7 +150,7 @@ mod tests {
         let mut visited = std::collections::HashSet::new();
         let _ = visited.insert(current);
 
-        while let Some(next) = strategy.next_hop(&mut packet, current, &cube, &faults, &mut rng) {
+        while let Some(next) = strategy.next_hop(&mut packet.header, current, &cube, &faults, &mut rng) {
             assert!(visited.insert(next), "loop detected at {next}");
             current = next;
         }

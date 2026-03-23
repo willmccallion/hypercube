@@ -2,13 +2,16 @@
 
 use crate::topology::NodeId;
 
-/// A packet being routed through the hypercube.
+/// Routing-relevant fields of a packet.
 ///
-/// The type parameter `T` allows embedding arbitrary payloads (e.g., coherence
-/// messages when used as a network-on-chip transport). The default `()` keeps the packet
-/// lightweight for standalone routing experiments.
+/// This is the subset of [`Packet`] that routing strategies inspect and
+/// modify. Extracting it into its own type allows [`RoutingStrategy`] to
+/// remain non-generic — it operates on `&mut PacketHeader` regardless of
+/// what payload type `T` the surrounding [`Packet<T>`] carries.
+///
+/// [`RoutingStrategy`]: crate::routing::RoutingStrategy
 #[derive(Debug, Clone)]
-pub struct Packet<T = ()> {
+pub struct PacketHeader {
     /// Unique packet identifier.
     pub id: u64,
     /// The node that originally injected this packet.
@@ -21,8 +24,35 @@ pub struct Packet<T = ()> {
     pub hops: u32,
     /// Logical tick at which the packet was injected.
     pub inject_tick: u64,
+}
+
+/// A packet being routed through the hypercube.
+///
+/// The type parameter `T` allows embedding arbitrary payloads (e.g., coherence
+/// messages when used as a network-on-chip transport). The default `()` keeps
+/// the packet lightweight for standalone routing experiments.
+///
+/// Routing-relevant fields live in [`PacketHeader`] and are accessible via
+/// [`Deref`] — e.g., `packet.destination` works directly.
+#[derive(Debug, Clone)]
+pub struct Packet<T = ()> {
+    /// Routing header (source, destination, phase, hops, etc.).
+    pub header: PacketHeader,
     /// Application-level payload carried by this packet.
     pub payload: T,
+}
+
+impl<T> std::ops::Deref for Packet<T> {
+    type Target = PacketHeader;
+    fn deref(&self) -> &PacketHeader {
+        &self.header
+    }
+}
+
+impl<T> std::ops::DerefMut for Packet<T> {
+    fn deref_mut(&mut self) -> &mut PacketHeader {
+        &mut self.header
+    }
 }
 
 /// Routing phase for a packet.

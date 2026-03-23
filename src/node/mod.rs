@@ -113,7 +113,7 @@ impl Node {
             // Phase 2: Route each packet.
             for mut packet in std::mem::take(&mut input_buffer) {
                 match self.strategy.next_hop(
-                    &mut packet,
+                    &mut packet.header,
                     self.id,
                     &self.cube,
                     &self.faults,
