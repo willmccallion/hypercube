@@ -6,45 +6,58 @@ mod builder;
 pub use builder::SimulationConfig;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use rand::RngCore;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
-use tokio::sync::{Barrier, mpsc};
-use tokio::task::JoinHandle;
+use tokio::sync::mpsc;
 
 use crate::packet::Phase;
 use crate::routing::RoutingStrategy;
-use crate::stats::{NodeStats, SimulationStats};
-use crate::topology::{Hypercube, NodeId};
+use crate::stats::SimulationStats;
+use crate::topology::{FaultSet, Hypercube, NodeId};
 use crate::traffic::TrafficPattern;
 
-/// Handle to a running simulation.
+/// A prepared simulation ready for traffic injection and execution.
+///
+/// Created by [`Engine::build`]. Call [`Engine::inject`] to add traffic,
+/// then [`Engine::run`] to execute the simulation.
 pub struct Engine {
+    /// Pre-assembled per-node state, consumed when spawning tasks.
+    node_configs: Vec<NodeConfig>,
     /// Injection senders, one per node.
     inject_txs: Vec<mpsc::Sender<crate::packet::Packet>>,
-    /// Join handles for all node tasks.
-    handles: Vec<JoinHandle<NodeStats>>,
-    /// Shared termination flag.
-    done: Arc<AtomicBool>,
     /// Global in-flight packet counter.
     in_flight: Arc<AtomicU64>,
-    /// Tick barrier (nodes + orchestrator).
-    barrier: Arc<Barrier>,
     /// The hypercube topology.
     cube: Arc<Hypercube>,
-    /// The routing strategy (for metadata).
+    /// The routing strategy.
     strategy: Arc<dyn RoutingStrategy>,
+    /// Shared fault configuration.
+    faults: Arc<FaultSet>,
+}
+
+/// Pre-assembled channel endpoints for a single node (not yet spawned).
+pub(crate) struct NodeConfig {
+    /// Node identifier.
+    pub id: NodeId,
+    /// Per-dimension receivers.
+    pub rx: Vec<mpsc::Receiver<crate::packet::Packet>>,
+    /// Per-dimension senders.
+    pub tx: Vec<mpsc::Sender<crate::packet::Packet>>,
+    /// Injection receiver.
+    pub inject_rx: mpsc::Receiver<crate::packet::Packet>,
+    /// RNG seed for this node.
+    pub rng_seed: u64,
 }
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
-            .field("node_count", &self.inject_txs.len())
+            .field("node_count", &self.node_configs.len())
             .field("dimension", &self.cube.dim())
             .field("strategy", &self.strategy.name())
-            .field("done", &self.done.load(Ordering::Relaxed))
             .field("in_flight", &self.in_flight.load(Ordering::Relaxed))
             .finish_non_exhaustive()
     }
@@ -52,6 +65,9 @@ impl std::fmt::Debug for Engine {
 
 impl Engine {
     /// Builds a new simulation engine from the given configuration.
+    ///
+    /// This creates all channels but does **not** spawn async tasks yet.
+    /// Tasks are spawned when [`Engine::run`] is called.
     pub fn build(config: SimulationConfig) -> Self {
         builder::build(config)
     }
@@ -77,12 +93,10 @@ impl Engine {
             }
         }
 
-        // Set inject tick and send to the appropriate node.
+        // Send each packet to the appropriate node's injection channel.
         for mut packet in packets {
             packet.inject_tick = 0;
             let src_idx = packet.source.raw() as usize;
-            // Use try_send since channels should have capacity for at least
-            // one packet per node.
             if let Err(e) = self.inject_txs[src_idx].try_send(packet) {
                 tracing::warn!("failed to inject packet at node {src_idx}: {e}");
             }
@@ -90,10 +104,10 @@ impl Engine {
         }
     }
 
-    /// Runs the simulation until all packets are delivered or a maximum
-    /// tick count is reached.
+    /// Runs the simulation for `max_ticks` synchronized ticks.
     ///
-    /// Returns aggregated statistics.
+    /// Spawns all node tasks, participates in the tick barrier as the
+    /// orchestrator, then collects and returns aggregated statistics.
     pub async fn run(
         self,
         traffic_name: &str,
@@ -101,39 +115,42 @@ impl Engine {
     ) -> SimulationStats {
         let dim = self.cube.dim();
         let strategy_name = self.strategy.name().to_owned();
+        let total_packets = self.in_flight.load(Ordering::Relaxed);
+        let node_count = self.node_configs.len();
 
-        // Orchestrator participates in the barrier.
-        let mut tick: u64 = 0;
-        loop {
-            // Wait for all nodes to complete this tick.
-            let _ = self.barrier.wait().await;
-            tick += 1;
+        // Barrier: all nodes + the orchestrator.
+        let barrier = Arc::new(tokio::sync::Barrier::new(node_count + 1));
 
-            if tick >= max_ticks {
-                tracing::warn!("simulation reached max tick limit ({max_ticks})");
-                break;
-            }
+        // Spawn node tasks now, passing the agreed-upon max_ticks.
+        let handles: Vec<_> = self
+            .node_configs
+            .into_iter()
+            .map(|nc| {
+                let node = crate::node::Node::new(
+                    nc.id,
+                    Arc::clone(&self.cube),
+                    nc.rx,
+                    nc.tx,
+                    nc.inject_rx,
+                    Arc::clone(&self.strategy),
+                    Arc::clone(&self.faults),
+                    Arc::clone(&barrier),
+                    max_ticks,
+                    nc.rng_seed,
+                );
+                tokio::spawn(node.run())
+            })
+            .collect();
 
-            // Simple termination: run for a generous number of ticks.
-            // A tighter check would track delivered packet count, but that
-            // requires per-node reporting each tick. For correctness, we
-            // overshoot and let nodes idle once they have no more packets.
-            //
-            // For an n-cube with Valiant routing, max path length is 2n.
-            // We add a generous buffer for queuing delays.
-            if tick > u64::from(dim) * 4 + 10 {
-                break;
-            }
+        // Orchestrator: participate in exactly max_ticks barriers.
+        for _ in 0..max_ticks {
+            let _ = barrier.wait().await;
         }
 
-        // Signal termination and wait one more barrier so nodes see it.
-        self.done.store(true, Ordering::Release);
-        let _ = self.barrier.wait().await;
-
-        // Collect results from all node tasks.
-        let total_packets = self.in_flight.load(Ordering::Relaxed);
-        let mut per_node = Vec::with_capacity(self.handles.len());
-        for handle in self.handles {
+        // All nodes have also completed their max_ticks loops.
+        // Collect results.
+        let mut per_node = Vec::with_capacity(handles.len());
+        for handle in handles {
             match handle.await {
                 Ok(stats) => per_node.push(stats),
                 Err(e) => tracing::error!("node task panicked: {e}"),

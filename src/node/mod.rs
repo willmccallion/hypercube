@@ -1,7 +1,6 @@
 //! Async node task: the event loop that runs on each hypercube vertex.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
@@ -34,8 +33,8 @@ pub struct Node {
     faults: Arc<FaultSet>,
     /// Tick barrier for synchronized stepping.
     barrier: Arc<Barrier>,
-    /// Termination signal.
-    done: Arc<AtomicBool>,
+    /// Total number of ticks to simulate.
+    max_ticks: u64,
     /// Seed for this node's local RNG.
     rng_seed: u64,
 }
@@ -46,6 +45,7 @@ impl std::fmt::Debug for Node {
             .field("id", &self.id)
             .field("dimension", &self.cube.dim())
             .field("strategy", &self.strategy.name())
+            .field("max_ticks", &self.max_ticks)
             .field("rng_seed", &self.rng_seed)
             .finish_non_exhaustive()
     }
@@ -63,7 +63,7 @@ impl Node {
         strategy: Arc<dyn RoutingStrategy>,
         faults: Arc<FaultSet>,
         barrier: Arc<Barrier>,
-        done: Arc<AtomicBool>,
+        max_ticks: u64,
         rng_seed: u64,
     ) -> Self {
         Self {
@@ -75,12 +75,12 @@ impl Node {
             strategy,
             faults,
             barrier,
-            done,
+            max_ticks,
             rng_seed,
         }
     }
 
-    /// Runs the node's event loop until the simulation completes.
+    /// Runs the node's event loop for exactly `max_ticks` ticks.
     ///
     /// Returns the accumulated [`NodeStats`] for this node.
     pub async fn run(mut self) -> NodeStats {
@@ -91,14 +91,13 @@ impl Node {
         let mut packets_forwarded: u64 = 0;
         let mut packets_delivered: u64 = 0;
         let mut delivery_latencies = Vec::new();
-        let mut tick: u64 = 0;
 
         // Per-dimension overflow queues for backpressure handling.
         let mut overflow: Vec<Vec<Packet>> = vec![Vec::new(); dim];
         // Buffer for packets received this tick.
         let mut input_buffer = Vec::new();
 
-        loop {
+        for tick in 0..self.max_ticks {
             // Phase 1: Drain all input channels (non-blocking).
             for rx in &mut self.rx {
                 while let Ok(pkt) = rx.try_recv() {
@@ -157,14 +156,6 @@ impl Node {
 
             // Phase 4: Barrier — synchronize with all other nodes.
             let _ = self.barrier.wait().await;
-
-            tick += 1;
-
-            // Phase 5: Check termination.
-            if self.done.load(Ordering::Acquire) {
-                // Drain any remaining overflow (best-effort for stats).
-                break;
-            }
         }
 
         NodeStats {
