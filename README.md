@@ -2,7 +2,7 @@
 
 Simulates packet routing on n-dimensional hypercube networks. Measures congestion, latency, and hop counts for different routing strategies and traffic patterns.
 
-The engine is tick-synchronous -- a single `tick()` call advances all nodes using double-buffered link queues. There's also an async mode behind the `async` feature flag that spawns per-node Tokio tasks. Neighbors are computed via bit-flips (`node_id XOR (1 << dim)`), so no adjacency lists are stored.
+The engine is tick-synchronous: in each `tick()` every node routes the packets that reached it, and every directed link then sends one packet from its output queue, which arrives at the neighbor on the next tick. Queues hold up to `--channel-capacity` packets; a packet whose queue is full waits at its node. Latency therefore includes time spent queueing, not just hops. There's also an async mode behind the `async` feature flag that spawns per-node Tokio tasks; it has no notion of ticks or link bandwidth. Neighbors are computed via bit-flips (`node_id XOR (1 << dim)`), so no adjacency lists are stored.
 
 ## Background
 
@@ -60,9 +60,9 @@ cargo run --release -- [OPTIONS]
 | `--dim` | 6 | Hypercube dimension (nodes = 2^dim) |
 | `--strategy` | valiant | Routing strategy |
 | `--traffic` | bit-reversal | Traffic pattern |
-| `--max-ticks` | 100 | Simulation duration in ticks |
+| `--max-ticks` | 100000 | Tick limit; the run stops once every packet is delivered |
 | `--seed` | 42 | RNG seed |
-| `--channel-capacity` | 256 | Buffer size per inter-node link |
+| `--channel-capacity` | 256 | Packets that can queue on each outgoing link |
 | `--faults` | 0 | Number of random node faults to inject |
 | `-o, --output` | stdout | CSV output file path |
 
@@ -86,7 +86,7 @@ Each row is one simulation run:
 
 ```
 dimension,nodes,strategy,traffic,total_packets,delivered,max_congestion,avg_congestion,max_latency,avg_latency,max_hops,avg_hops,per_dim_load,per_dim_max_queue
-8,256,valiant,bit-reversal,256,256,4,1.02,9,4.50,14,8.13,266;282;268;256;252;254;254;250,0;0;0;0;0;0;0;0
+8,256,valiant,bit-reversal,256,256,4,1.02,14,8.36,14,8.13,266;282;268;256;252;254;254;250,3;2;2;2;2;2;2;2
 ```
 
 The `per_dim_load` and `per_dim_max_queue` columns are semicolon-delimited, one value per dimension. This lets you analyze congestion distribution across dimensions.
@@ -127,7 +127,7 @@ src/
 
 Notes:
 - Neighbors are implicit: `node_id XOR (1 << dim)`, no adjacency lists.
-- Double-buffered `VecDeque` link queues prevent packets from advancing more than one hop per tick (BSP model).
+- Each directed link sends one packet per tick from a bounded `VecDeque` output queue, so a packet advances at most one hop per tick and waits when links are busy.
 - `Engine<T>` is sync with no Tokio dependency. `AsyncEngine` (behind `async` feature) spawns per-node Tokio tasks.
 - `Packet<T>` carries an arbitrary payload. `RoutingStrategy` operates on `PacketHeader` only, so the trait is non-generic and object-safe.
 
@@ -142,7 +142,7 @@ hypercube = { path = "../hypercube" }
 
 ```rust
 use std::sync::Arc;
-use hypercube::engine::{Engine, SimulationConfig};
+use hypercube::engine::{DEFAULT_CHANNEL_CAPACITY, Engine, SimulationConfig};
 use hypercube::routing::BitFixing;
 use hypercube::topology::{FaultSet, NodeId};
 
@@ -150,7 +150,7 @@ let config = SimulationConfig {
     dimension: 4,
     strategy: Arc::new(BitFixing),
     faults: FaultSet::new(),
-    channel_capacity: 256,
+    channel_capacity: DEFAULT_CHANNEL_CAPACITY,
     seed: 42,
 };
 
@@ -172,12 +172,16 @@ while net.in_flight() > 0 {
 
 Measured on a single machine (release build):
 
-| Dimension | Nodes | Approx. runtime |
-|-----------|-------|-----------------|
-| 8 | 256 | instant |
-| 12 | 4,096 | < 1s |
-| 14 | 16,384 | ~1s |
-| 16 | 65,536 | ~17s |
+Single run with bit-reversal traffic; runs stop once every packet is delivered.
+
+| Dimension | Nodes | Bit-fixing | Valiant |
+|-----------|-------|------------|---------|
+| 8 | 256 | < 0.01s | < 0.01s |
+| 12 | 4,096 | < 0.01s | 0.01s |
+| 14 | 16,384 | 0.05s | 0.04s |
+| 16 | 65,536 | 0.46s | 0.31s |
+
+The full 504-run sweep below takes about 15 seconds.
 
 ## Results
 
@@ -206,7 +210,7 @@ Left panel (greedy): congestion varies widely -- bit-reversal/transpose hit 128 
 
 ![Latency vs hops](charts/latency_vs_hops.png)
 
-Packets move ~2 hops per tick since all nodes forward simultaneously. Latency scales linearly with hop count. Bit-fixing shows separation: complement (16 hops at dim=16) has the highest latency, butterfly (avg 1 hop, max 2) the lowest. Valiant collapses patterns into a tight band since the random intermediate dominates path length.
+A packet with no competition takes one tick per hop, so the dotted line (latency = hops) is the floor and anything above it is time spent queueing. Bit-fixing sits on the line for easy patterns, but on bit-reversal and transpose its congested links make packets wait: at dim=16 the average bit-reversal packet needs 47 ticks for 8 hops, and the slowest 136. Valiant pays for its random intermediate with about twice the hops, but its loads stay O(n), so it stays on the line and the slowest bit-reversal packet arrives in about 30 ticks. This is Valiant and Brebner's result: worse on easy traffic, far better on adversarial traffic.
 
 ### Hop distribution
 

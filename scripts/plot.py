@@ -195,7 +195,7 @@ def plot_strategy_comparison(df: pd.DataFrame, outdir: Path):
 
 
 def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
-    """Average latency vs. average hops — shows pipelining effect."""
+    """Average latency vs. average hops; the gap above latency = hops is queueing."""
     df = fully_delivered(df)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 6))
 
@@ -206,12 +206,8 @@ def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
         subset = df[df["strategy"] == strategy]
         max_h = subset["avg_hops"].max() * 1.1
 
-        # Green band: the empirical ratio is ~0.53-0.60 hops.
         h = np.linspace(0, max_h, 100)
-        ax.fill_between(h, h * 0.50, h * 0.62,
-                        color=BAND_COLOR, alpha=BAND_ALPHA,
-                        label="expected range")
-        ax.plot(h, h * 0.56, **REF_STYLE, label="latency $\\approx$ 0.56 $\\times$ hops")
+        ax.plot(h, h, **REF_STYLE, label="latency = hops (no queueing)")
 
         for traffic in sorted(subset["traffic"].unique()):
             t = subset[subset["traffic"] == traffic].sort_values("dimension")
@@ -234,7 +230,7 @@ def plot_latency_vs_hops(df: pd.DataFrame, outdir: Path):
 
     fig.suptitle(
         "Latency vs. Hops\n"
-        "(synchronous pipelining: packets traverse ~1.8 hops/tick)",
+        "(each link sends one packet per tick; time above the line is queueing)",
         fontweight="bold",
         y=1.02,
     )
