@@ -38,7 +38,7 @@ pub fn write_csv(
 
     writeln!(
         writer,
-        "{},{},{},{},{},{},{},{:.2},{},{},{},{:.2},{},{}",
+        "{},{},{},{},{},{},{},{:.2},{},{:.2},{},{:.2},{},{}",
         stats.dimension,
         1u32 << stats.dimension,
         stats.routing_strategy,
