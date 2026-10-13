@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
 
-use hypercube::engine::{Engine, SimulationConfig};
+use hypercube::engine::{DEFAULT_CHANNEL_CAPACITY, Engine, SimulationConfig};
 use hypercube::routing::FaultTolerant;
 use hypercube::topology::{FaultSet, Hypercube};
 use hypercube::traffic::BitReversal;
@@ -15,7 +15,7 @@ fn config_with_faults(dim: u8, faults: FaultSet) -> SimulationConfig {
         dimension: dim,
         strategy: Arc::new(FaultTolerant),
         faults,
-        channel_capacity: 256,
+        channel_capacity: DEFAULT_CHANNEL_CAPACITY,
         seed: 42,
     }
 }

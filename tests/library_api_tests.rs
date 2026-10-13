@@ -1,9 +1,10 @@
 //! Tests for the library embedding API: `inject_one`, `drain_delivered`,
 //! `tick_count`, `in_flight`, and generic payload support.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
-use hypercube::engine::{Engine, SimulationConfig};
+use hypercube::engine::{DEFAULT_CHANNEL_CAPACITY, Engine, SimulationConfig};
 use hypercube::routing::{BitFixing, Valiant};
 use hypercube::topology::{FaultSet, NodeId};
 
@@ -12,7 +13,7 @@ fn config(dim: u8, strategy: Arc<dyn hypercube::routing::RoutingStrategy>) -> Si
         dimension: dim,
         strategy,
         faults: FaultSet::new(),
-        channel_capacity: 256,
+        channel_capacity: DEFAULT_CHANNEL_CAPACITY,
         seed: 42,
     }
 }
@@ -221,4 +222,57 @@ fn cube_accessor() {
     let engine: Engine<()> = Engine::build(config(5, Arc::new(BitFixing)));
     assert_eq!(engine.cube().dim(), 5);
     assert_eq!(engine.cube().node_count(), 32);
+}
+
+fn config_with_capacity(dim: u8, capacity: NonZeroUsize) -> SimulationConfig {
+    SimulationConfig {
+        channel_capacity: capacity,
+        ..config(dim, Arc::new(BitFixing))
+    }
+}
+
+/// Ticks until every packet is delivered, returning each packet's latency.
+fn latencies_until_drained(net: &mut Engine<u64>) -> Vec<u64> {
+    let mut latencies = Vec::new();
+    while net.in_flight() > 0 {
+        net.tick();
+        for pkt in net.drain_delivered() {
+            latencies.push(net.tick_count() - 1 - pkt.inject_tick);
+        }
+    }
+    latencies
+}
+
+#[test]
+fn a_link_carries_one_packet_per_tick() {
+    let mut net: Engine<u64> = Engine::build(config_with_capacity(1, DEFAULT_CHANNEL_CAPACITY));
+    for payload in 0..3 {
+        let _ = net.inject_one(NodeId::new(0), NodeId::new(1), payload);
+    }
+
+    let latencies = latencies_until_drained(&mut net);
+
+    assert_eq!(latencies, vec![1, 2, 3]);
+}
+
+#[test]
+fn packets_wait_at_the_node_when_the_link_queue_is_full() {
+    let mut net: Engine<u64> = Engine::build(config_with_capacity(1, NonZeroUsize::MIN));
+    for payload in 0..4 {
+        let _ = net.inject_one(NodeId::new(0), NodeId::new(1), payload);
+    }
+
+    let latencies = latencies_until_drained(&mut net);
+
+    assert_eq!(latencies, vec![1, 2, 3, 4]);
+}
+
+#[test]
+fn an_uncongested_packet_takes_one_tick_per_hop() {
+    let mut net: Engine<u64> = Engine::build(config_with_capacity(3, DEFAULT_CHANNEL_CAPACITY));
+    let _ = net.inject_one(NodeId::new(0), NodeId::new(7), 0);
+
+    let latencies = latencies_until_drained(&mut net);
+
+    assert_eq!(latencies, vec![3]);
 }

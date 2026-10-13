@@ -11,7 +11,7 @@
 //!
 //! ```rust,no_run
 //! use std::sync::Arc;
-//! use hypercube::engine::{Engine, SimulationConfig};
+//! use hypercube::engine::{DEFAULT_CHANNEL_CAPACITY, Engine, SimulationConfig};
 //! use hypercube::routing::BitFixing;
 //! use hypercube::topology::{FaultSet, NodeId};
 //!
@@ -19,7 +19,7 @@
 //!     dimension: 4,
 //!     strategy: Arc::new(BitFixing),
 //!     faults: FaultSet::new(),
-//!     channel_capacity: 256,
+//!     channel_capacity: DEFAULT_CHANNEL_CAPACITY,
 //!     seed: 42,
 //! };
 //!

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use hypercube::engine::{Engine, SimulationConfig};
+use hypercube::engine::{DEFAULT_CHANNEL_CAPACITY, Engine, SimulationConfig};
 use hypercube::routing::{BitFixing, Valiant};
 use hypercube::topology::FaultSet;
 use hypercube::traffic::{BitReversal, Complement, Identity, RandomPermutation};
@@ -12,7 +12,7 @@ fn config(dim: u8, strategy: Arc<dyn hypercube::routing::RoutingStrategy>) -> Si
         dimension: dim,
         strategy,
         faults: FaultSet::new(),
-        channel_capacity: 256,
+        channel_capacity: DEFAULT_CHANNEL_CAPACITY,
         seed: 42,
     }
 }

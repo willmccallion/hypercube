@@ -1,6 +1,7 @@
 //! Hypercube routing simulator binary.
 
 use std::io::Write;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use clap::Parser;
@@ -66,31 +67,13 @@ fn parse_traffic_range(s: &str) -> Vec<Traffic> {
 ///
 /// Returns a list of capacities from `start` to `end` inclusive, stepping by
 /// `step`. A single value returns a one-element list.
-fn parse_capacity_range(s: &str) -> Vec<usize> {
-    let parts: Vec<&str> = s.split(':').collect();
-    match parts.len() {
-        1 => parts[0].parse().ok().map_or_else(Vec::new, |v| vec![v]),
-        2 => {
-            let start = parts[0].parse().unwrap_or(256);
-            let end = parts[1].parse().unwrap_or(256);
-            (start..=end).collect()
-        }
-        _ => {
-            let start: usize = parts[0].parse().unwrap_or(256);
-            let end: usize = parts[1].parse().unwrap_or(256);
-            let step: usize = parts[2].parse().unwrap_or(1).max(1);
-            (start..=end).step_by(step).collect()
-        }
-    }
-}
-
 fn run_single(
     dim: u8,
     strategy: Arc<dyn RoutingStrategy>,
     traffic: &dyn TrafficPattern,
     max_ticks: u64,
     seed: u64,
-    channel_capacity: usize,
+    channel_capacity: NonZeroUsize,
     num_faults: usize,
 ) -> SimulationStats {
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
@@ -125,10 +108,10 @@ fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
         .as_deref()
         .map_or_else(|| vec![cli.traffic], parse_traffic_range);
 
-    let capacities: Vec<usize> = cli
+    let capacities = cli
         .capacity_range
-        .as_deref()
-        .map_or_else(|| vec![cli.channel_capacity], parse_capacity_range);
+        .clone()
+        .unwrap_or_else(|| vec![cli.channel_capacity]);
 
     let strategies: Vec<(Arc<dyn RoutingStrategy>, &str)> = match cli.strategy {
         Strategy::Both => vec![
@@ -150,7 +133,8 @@ fn run_sweep(cli: &Cli) -> Vec<SimulationStats> {
     let mut results = Vec::new();
 
     for dim in lo..=hi {
-        let max_ticks = u64::from(dim) * 4 + 20;
+        // Every packet can wait behind at most N others on each of its 2n hops.
+        let max_ticks = (1u64 << dim) * 2 * u64::from(dim) + 20;
         for &capacity in &capacities {
             for &traffic_variant in &traffic_variants {
                 let traffic = make_traffic(traffic_variant);

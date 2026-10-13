@@ -1,10 +1,17 @@
 use std::collections::VecDeque;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::routing::RoutingStrategy;
 use crate::topology::{FaultSet, Hypercube};
 
-use super::{Engine, LinkBuffer, NodeState};
+use super::{Engine, NodeState};
+
+/// Default number of packets that can queue on each outgoing link.
+pub const DEFAULT_CHANNEL_CAPACITY: NonZeroUsize = match NonZeroUsize::new(256) {
+    Some(capacity) => capacity,
+    None => unreachable!(),
+};
 
 /// Configuration for building a simulation engine.
 ///
@@ -19,9 +26,9 @@ pub struct SimulationConfig {
     pub strategy: Arc<dyn RoutingStrategy>,
     /// Fault configuration (empty for fault-free simulation).
     pub faults: FaultSet,
-    /// Channel buffer capacity per link (used by the async engine; reserved
-    /// for future backpressure in the sync engine).
-    pub channel_capacity: usize,
+    /// Packets that can queue on each outgoing link. The sync engine sends
+    /// one packet per link per tick; the async engine bounds its channels.
+    pub channel_capacity: NonZeroUsize,
     /// Base RNG seed for reproducibility.
     pub seed: u64,
 }
@@ -51,8 +58,8 @@ pub(super) fn build_sync<T: Send + 'static>(config: SimulationConfig) -> Engine<
         .map(|i| NodeState::new(dim, config.seed.wrapping_add(i as u64)))
         .collect();
 
-    let links: Vec<Vec<LinkBuffer<T>>> = (0..node_count)
-        .map(|_| (0..dim).map(|_| LinkBuffer::new()).collect())
+    let out_queues: Vec<Vec<VecDeque<_>>> = (0..node_count)
+        .map(|_| (0..dim).map(|_| VecDeque::new()).collect())
         .collect();
 
     let inject: Vec<VecDeque<_>> = (0..node_count).map(|_| VecDeque::new()).collect();
@@ -62,7 +69,10 @@ pub(super) fn build_sync<T: Send + 'static>(config: SimulationConfig) -> Engine<
         strategy: config.strategy,
         faults: config.faults,
         nodes,
-        links,
+        out_queues,
+        channel_capacity: config.channel_capacity,
+        arriving: (0..node_count).map(|_| Vec::new()).collect(),
+        blocked: (0..node_count).map(|_| Vec::new()).collect(),
         inject,
         delivered: Vec::new(),
         current_tick: 0,
@@ -90,7 +100,7 @@ pub(super) fn build_async(config: SimulationConfig) -> super::AsyncEngine {
     let mut inject_rxs: Vec<Option<mpsc::Receiver<crate::packet::Packet>>> =
         Vec::with_capacity(node_count);
     for _ in 0..node_count {
-        let (tx, rx) = mpsc::channel(config.channel_capacity);
+        let (tx, rx) = mpsc::channel(config.channel_capacity.get());
         inject_txs.push(tx);
         inject_rxs.push(Some(rx));
     }
@@ -113,8 +123,8 @@ pub(super) fn build_async(config: SimulationConfig) -> super::AsyncEngine {
 
             let neighbor_idx = node_idx ^ (1 << d);
 
-            let (tx_a_to_b, rx_a_to_b) = mpsc::channel(config.channel_capacity);
-            let (tx_b_to_a, rx_b_to_a) = mpsc::channel(config.channel_capacity);
+            let (tx_a_to_b, rx_a_to_b) = mpsc::channel(config.channel_capacity.get());
+            let (tx_b_to_a, rx_b_to_a) = mpsc::channel(config.channel_capacity.get());
 
             senders[node_idx][d] = Some(tx_a_to_b);
             receivers[neighbor_idx][d] = Some(rx_a_to_b);
